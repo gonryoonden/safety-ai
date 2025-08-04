@@ -11,6 +11,13 @@ from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
 import numpy as np
 
+from dotenv import load_dotenv # 👈 1. 라이브러리 임포트
+
+# 👈 2. FastAPI 앱을 생성하기 전에 가장 먼저 .env 파일을 로드합니다.
+#    이렇게 하면 이 파일뿐만 아니라, 여기서 임포트하는 모든 다른 파일(vector_search_service 등)에서도
+#    API 키를 정상적으로 사용할 수 있습니다.
+load_dotenv()
+
 # --- 1. 설정 및 상수 정의 ---
 
 # 로깅 설정
@@ -18,7 +25,7 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 
 # 파일 및 API 관련 상수
 KNOWLEDGE_BASE_FILE = "answers.json"
-OC_VALUE = 'shg3335'  # 유효한 API 키
+OC_VALUE = 'shg30335'  # 유효한 API 키
 SEARCH_URL = 'http://www.law.go.kr/DRF/lawSearch.do'
 CONTENT_URL = 'http://www.law.go.kr/DRF/lawService.do'
 
@@ -120,9 +127,34 @@ def format_answer(item: Dict[str, Any], rank: int) -> str:
     return formatted_output.strip()
 
 # --- 3. 법령 API 조회(lawFetcher) 관련 함수 (이전과 동일) ---
-def search_law_api(law_name: str) -> Optional[Dict[str, Any]]:
-    # ... (이전 코드와 동일)
-    pass 
+
+def search_law(law_name):
+    """법령명으로 국가법령정보 DRF API에서 JSON 데이터를 조회"""
+    base_url = "http://www.law.go.kr/DRF/lawSearch.do"
+    oc_key = os.getenv("LAW_API_OC")  # .env에 등록한 기관코드
+    print(f"법령 API 호출: {law_name} (기관코드: {oc_key})")
+    params = {
+        "OC": oc_key,
+        "target": "law",
+        "type": "JSON",
+        "query": law_name
+    }
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
+    }
+    try:
+        resp = requests.get(base_url, params=params, headers=headers, timeout=10)
+        print(f"API 요청 URL: {resp.url}")  # 요청 URL 출력
+        if resp.status_code == 200 and "application/json" in resp.headers.get("Content-Type", ""):
+            print(f"✅ '{law_name}' 데이터 수집 성공")
+            return resp.json()
+        else:
+            print(f"❌ '{law_name}' 조회 실패 (상태:{resp.status_code}) → 응답 타입: {resp.headers.get('Content-Type')}")
+            return None
+    except Exception as e:
+        print(f"❌ '{law_name}' 조회 중 예외 발생: {e}")
+        return None
+
 
 # --- 4. 메인 실행 로직 ---
 def run_local_search():
@@ -143,8 +175,35 @@ def run_local_search():
     print("="*40)
 
 def run_api_fetcher():
-    # ... (이전 코드와 동일)
-    pass
+    print("==============================================")
+    print("     산업안전 AI - 핵심 법령 데이터베이스 구축 시작")
+    print("==============================================")
+
+    law_database = {}
+
+    for law_name in CORE_LAW_SET:
+        law_content = search_law(law_name)
+        if law_content:
+            law_database[law_name] = law_content
+        time.sleep(0.5)
+        print("-" * 50)
+
+    print("\n\n==============================================")
+    print("     ✅ 핵심 법령 데이터베이스 구축 완료!")
+    print(f"     총 {len(law_database)}개의 법령 정보를 성공적으로 가져왔습니다.")
+    print("     저장된 법령 목록:", list(law_database.keys()))
+    print("==============================================")
+    
+    # law_database를 파일로 저장
+    with open("law_database.json", "w", encoding="utf-8") as f:
+        json.dump(law_database, f, ensure_ascii=False, indent=2)
+        print("📝 law_database.json 파일로 저장 완료")
+
+    # 예시: 산업안전보건법의 총조문수 출력
+    if "산업안전보건법" in law_database:
+        san_an_bub = law_database["산업안전보건법"]
+        if "law" in san_an_bub and "총조문수" in san_an_bub["law"]:
+            print(f"\n참고: '산업안전보건법'은 총 {san_an_bub['law']['총조문수']}개의 조문으로 이루어져 있습니다.")
 
 def main():
     """메인 실행 함수"""
