@@ -1,0 +1,8 @@
+.vercel
+__pycache__/
+.env
+*.bin
+*.h5
+*.pkl
+faiss_index.bin
+law_database.json
