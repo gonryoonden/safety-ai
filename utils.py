@@ -61,3 +61,58 @@ def make_law_link(law_text: str) -> str:
         logging.error(f"법령 API 응답 처리 중 데이터 구조 오류 발생: {e}")
 
     return f"{base_url}/LSW/lsSc.do?query={law_text}"
+# utils.py 파일에 추가할 코드
+
+import requests
+import os
+
+# LAW_API_OC는 .env 파일 등에서 안전하게 불러오는 것을 권장합니다.
+# 여기서는 임시로 os.getenv를 사용합니다.
+LAW_API_OC = os.getenv("LAW_API_OC", "test")
+
+def get_attachment_link(law_name: str, attachment_number: str) -> str | None:
+    """
+    법령명과 별표 번호로 해당 별표/서식의 PDF 링크를 찾아 반환합니다.
+    """
+    print(f"'{law_name}'의 별표 '{attachment_number}'를 검색합니다...")
+    
+    # 1. API URL 구성
+    url = "http://www.law.go.kr/DRF/lawSearch.do"
+    params = {
+        "OC": LAW_API_OC,
+        "target": "licbyl",  # 별표서식 목록 API
+        "type": "JSON",
+        "search": 2,         # 2: 법령명으로 검색
+        "query": law_name,
+        "display": 100       # 최대 100개까지 결과를 받아옴
+    }
+
+    try:
+        # 2. API 호출
+        response = requests.get(url, params=params, timeout=10)
+        response.raise_for_status()
+        data = response.json()
+        
+        attachments = data.get("licbyl", [])
+        if not attachments:
+            print(f"'{law_name}'에 대한 별표/서식 정보를 찾지 못했습니다.")
+            return None
+
+        # 3. 결과 필터링 및 링크 추출
+        for item in attachments:
+            # '별표번호'가 정확히 일치하는 항목을 찾습니다.
+            if item.get("별표번호") == attachment_number:
+                pdf_link = item.get("별표서식PDF파일링크")
+                print(f"성공: '{item['별표명']}'의 링크를 찾았습니다.")
+                return "http://www.law.go.kr" + pdf_link
+        
+        print(f"'{law_name}'에서 별표 '{attachment_number}'를 찾지 못했습니다.")
+        return None
+
+    except requests.RequestException as e:
+        print(f"API 요청 중 오류 발생: {e}")
+        return None
+    except json.JSONDecodeError:
+        print(f"API 응답 분석 실패: {response.text}")
+        return None
+    

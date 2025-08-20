@@ -1,16 +1,35 @@
 import os
-from dotenv import load_dotenv
+import re
 
-# .env 파일을 로드합니다.
-load_dotenv()
+def manual_load_dotenv(path):
+    try:
+        with open(path, 'r', encoding='utf-8') as f:
+            for line in f:
+                line = line.strip()
+                if not line or line.startswith('#'):
+                    continue
+                match = re.match(r'^([^=]+)=(.*)$', line)
+                if match:
+                    key, value = match.groups()
+                    # Simpler quote stripping
+                    if value.startswith(("", "'")) and value.endswith(("", "'")):
+                        if value[0] == value[-1]:
+                            value = value[1:-1]
+                    os.environ[key] = value
+    except FileNotFoundError:
+        print(f"Error: Dotenv file not found at {path}")
+    except Exception as e:
+        print(f"An error occurred: {e}")
 
-# 'GEMINI_API_KEY' 라는 이름의 환경 변수를 가져옵니다.
+# Manually load the .env file
+dotenv_path = "C:\\Users\\kwater\\Desktop\\safety-ai\\.env"
+manual_load_dotenv(dotenv_path)
+
+# Check for the API key
 api_key = os.getenv("GEMINI_API_KEY")
 
-# 결과를 출력합니다.
+# Print the result
 if api_key:
-    # 키의 일부만 출력하여 유출을 방지합니다.
-    print(f"✅ 성공: API 키를 찾았습니다. (시작 4자리: {api_key[:4]}...)")
+    print(f"Success: Found the API key. (Starts with: {api_key[:4]}...)")
 else:
-    print("❌ 실패: .env 파일에서 'GEMINI_API_KEY'를 찾지 못했습니다.")
-    print("'.env' 파일의 내용이 'GEMINI_API_KEY=\"...\"' 형식인지 다시 확인해 주세요.")
+    print("Failure: Could not find 'GEMINI_API_KEY' even after manual load.")

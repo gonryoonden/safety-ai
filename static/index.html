@@ -1,0 +1,67 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>산업안전 AI 어시스턴트</title>
+    <style>
+        body { font-family: sans-serif; max-width: 800px; margin: 40px auto; padding: 20px; line-height: 1.6; }
+        h1 { text-align: center; }
+        #search-container { display: flex; gap: 10px; }
+        #question { flex-grow: 1; padding: 10px; font-size: 16px; }
+        button { padding: 10px 20px; font-size: 16px; cursor: pointer; }
+        #results { margin-top: 20px; padding: 15px; background-color: #f7f7f7; border: 1px solid #ddd; white-space: pre-wrap; word-wrap: break-word; }
+        #loading { text-align: center; display: none; margin-top: 20px; }
+    </style>
+</head>
+<body>
+
+    <h1>산업안전 AI 어시스턴트</h1>
+    <div id="search-container">
+        <input type="text" id="question" placeholder="질문을 입력하세요 (예: 타워크레인 설치 자격)">
+        <button onclick="search()">검색</button>
+    </div>
+
+    <div id="loading">검색 중...</div>
+    <pre id="results"></pre>
+
+    <script>
+        async function search() {
+            const questionInput = document.getElementById('question');
+            const resultsDiv = document.getElementById('results');
+            const loadingDiv = document.getElementById('loading');
+
+            const question = questionInput.value;
+            if (!question) {
+                alert('질문을 입력해주세요.');
+                return;
+            }
+
+            // 이전 결과 지우고 로딩 표시
+            resultsDiv.textContent = '';
+            loadingDiv.style.display = 'block';
+
+            try {
+                // 올바른 변수인 'query'를 사용하도록 변경
+            const response = await fetch(`/api/get-answer?q=${encodeURIComponent(question)}`);
+
+                if (!response.ok) {
+                    throw new Error(`서버 오류: ${response.status}`);
+                }
+
+                const data = await response.json();
+
+                // 결과를 예쁘게 포맷팅해서 화면에 표시
+                resultsDiv.textContent = JSON.stringify(data, null, 2);
+
+            } catch (error) {
+                resultsDiv.textContent = `오류가 발생했습니다: ${error.message}`;
+            } finally {
+                // 로딩 숨기기
+                loadingDiv.style.display = 'none';
+            }
+        }
+    </script>
+
+</body>
+</html>

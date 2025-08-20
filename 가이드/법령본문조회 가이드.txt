@@ -1,0 +1,97 @@
+법령 본문 조회 API
+- 요청 URL : http://www.law.go.kr/DRF/lawService.do?target=law
+요청 변수 (request parameter)
+요청변수	값	설명
+OC	string(필수)	사용자 이메일의 ID(g4c@korea.kr일경우 OC값=g4c)
+target	string : law(필수)	서비스 대상
+type	char(필수)	출력 형태 : HTML/XML/JSON
+ID	char	법령 ID (ID 또는 MST 중
+하나는 반드시 입력)
+MST	char	법령 마스터 번호 -
+법령테이블의 lsi_seq 값을 의미함
+LM	string	법령의 법령명(법령명 입력시 해당 법령 링크)
+LD	int	법령의 공포일자
+LN	int	법령의 공포번호
+JO	int	조번호
+생략(기본값) : 모든 조를 표시함
+6자리숫자 : 조번호(4자리)+조가지번호(2자리)
+(000200 : 2조, 001002 : 10조의 2)
+LANG	char	원문/한글 여부
+생략(기본값) : 한글
+(KO : 한글, ORI : 원문)
+샘플 URL
+1. 법령 HTML 상세조회
+http://www.law.go.kr/DRF/lawService.do?OC=test&target=law&ID=009682&type=HTML
+http://www.law.go.kr/DRF/lawService.do?OC=test&target=law&MST=261457&type=HTML
+2. 법령 XML 상세조회
+http://www.law.go.kr/DRF/lawService.do?OC=test&target=law&ID=009682&type=XML
+http://www.law.go.kr/DRF/lawService.do?OC=test&target=law&MST=261457&type=XML
+3. 법령 JSON 상세조회
+http://www.law.go.kr/DRF/lawService.do?OC=test&target=law&ID=009682&type=JSON
+http://www.law.go.kr/DRF/lawService.do?OC=test&target=law&MST=261457&type=JSON
+출력 결과 필드(response field)
+필드	값	설명
+법령ID	int	법령ID
+공포일자	int	공포일자
+공포번호	int	공포번호
+언어	string	언어종류
+법종구분	string	법종류의 구분
+법종구분코드	string	법종구분코드
+법령명_한글	string	한글법령명
+법령명_한자	string	법령명_한자
+법령명약칭	string	법령명약칭
+제명변경여부	string	제명변경여부
+한글법령여부	string	한글법령여부
+편장절관	int	편장절관 일련번호
+소관부처코드	int	소관부처코드
+소관부처	string	소관부처명
+전화번호	string	전화번호
+시행일자	int	시행일자
+제개정구분	string	제개정구분
+별표편집여부	string	별표편집여부
+공포법령여부	string	공포법령여부
+소관부처명	string	소관부처명
+소관부처코드	int	소관부처코드
+부서명	string	연락부서명
+부서연락처	string	연락부서 전화번호
+공동부령구분	string	공동부령의 구분
+구분코드	string	구분코드(공동부령구분 구분코드)
+공포번호	string	공포번호(공동부령의 공포번호)
+조문번호	int	조문번호
+조문가지번호	int	조문가지번호
+조문여부	string	조문여부
+조문제목	string	조문제목
+조문시행일자	int	조문시행일자
+조문제개정유형	string	조문제개정유형
+조문이동이전	int	조문이동이전
+조문이동이후	int	조문이동이후
+조문변경여부	string	조문변경여부
+(Y값이 있으면 해당 조문내에 변경 내용 있음 )
+조문내용	string	조문내용
+항번호	int	항번호
+항제개정유형	string	항제개정유형
+항제개정일자문자열	string	항제개정일자문자열
+항내용	string	항내용
+호번호	int	호번호
+호내용	string	호내용
+조문참고자료	string	조문참고자료
+부칙공포일자	int	부칙공포일자
+부칙공포번호	int	부칙공포번호
+부칙내용	string	부칙내용
+별표번호	int	별표번호
+별표가지번호	int	별표가지번호
+별표구분	string	별표구분
+별표제목	string	별표제목
+별표서식
+파일링크	string	별표서식파일링크
+별표HWP
+파일명	string	별표 HWP 파일명
+별표서식
+PDF파일링크	string	별표서식PDF파일링크
+별표PDF
+파일명	string	별표 PDF 파일명
+별표이미지
+파일명	string	별표 이미지 파일명
+별표내용	string	별표내용
+개정문내용	string	개정문내용
+제개정이유내용	string	제개정이유내용
