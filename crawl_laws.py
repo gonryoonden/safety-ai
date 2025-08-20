@@ -21,7 +21,7 @@ LAW_NAMES_TO_CRAWL = [
 ]
 
 # 결과를 저장할 디렉토리 이름
-OUTPUT_DIR = "crawled_laws"
+OUTPUT_DIR = "laws"
 
 # API 요청에 필요한 OC 값 (이제 .env 파일에서 정상적으로 불러옵니다)
 LAW_API_OC = os.getenv("LAW_API_OC")

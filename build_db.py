@@ -40,7 +40,7 @@ if __name__ == "__main__":
     else:
         logging.info("벡터 DB 생성을 시작합니다...")
         try:
-            vector_search_service.build_and_save_index(limit=None)
+            vector_search_service.build_and_save_index()
             logging.info("성공적으로 'faiss_index.bin' 파일을 생성했습니다.") # Removed emoji
         except Exception as e:
             logging.error(f"벡터 DB 생성 중 오류 발생: {e}")
