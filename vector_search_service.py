@@ -1,364 +1,502 @@
-import json
+# vector_search_service.py
 import os
-import logging
-import faiss
-import numpy as np
-import google.generativeai as genai
-import requests
-import time
 import re
-from typing import List, Dict, Any, Tuple
-from typing import List, Dict, Any, Tuple, Optional # Optional 추가
-from concurrent.futures import ThreadPoolExecutor, as_completed # 👈 이 줄을 추가하세요.
+import json
+import time
+import logging
+import tempfile
+import unicodedata
+from typing import Any, Dict, Iterable, List, Optional, Tuple
 
-# --- 상수 ---
-RAW_DATA_FILE = "law_database.json"
-KNOWLEDGE_BASE_FILE = "answers.json"
-EMBEDDING_MODEL = "models/text-embedding-004"
-FAISS_INDEX_FILE = "faiss_index.bin"
-ID_MAP_FILE = "faiss_id_map.json"
-LAW_API_OC = os.getenv("LAW_API_OC", "test")
+try:
+    import faiss  # type: ignore
+except Exception:
+    faiss = None  # noqa
 
-# --- 전역 변수 ---
-index = None
-id_map = None
-knowledge_base = None
+from utils import LawAPIClient
 
-# --- 로깅 설정 ---
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - [%(levelname)s] - %(message)s')
+# ----------------------- 기본 설정 -----------------------
+logger = logging.getLogger(__name__)
+logging.basicConfig(level=logging.INFO, format='[%(asctime)s] %(levelname)s %(message)s')
 
-# ==================================================================================
-# ▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼ 핵심 수정 영역 START ▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼
-# ==================================================================================
+EMBEDDING_MODEL = os.environ.get("EMBEDDING_MODEL", "text-embedding-004")
+PRETTY_NAMES = os.getenv("PRETTY_NAMES", "1") == "1"      # 한글+MST 파일명 사용
+BUNDLE_PER_LAW = os.getenv("BUNDLE_PER_LAW", "0") == "1"  # 법령별 폴더 묶음 저장
+STRIP_HEADINGS = os.getenv("STRIP_HEADINGS", "1") == "1"  # 편/장/절/관/부칙/별표/서식 제거
 
-def format_jo_no(jo_no_str: str) -> str:
-    """조문 번호를 API가 요구하는 6자리 형식으로 변환합니다. (예: '2' -> '000200', '4의2' -> '000402')"""
-    parts = jo_no_str.split('의')
-    main_no = parts[0].zfill(4)
-    sub_no = parts[1].zfill(2) if len(parts) > 1 else "00"
-    return main_no + sub_no
+# ----------------------- 안전 파일 쓰기 -------------------
+class AtomicWriter:
+    def __init__(self, final_path: str):
+        self.final_path = final_path
+        self.tmp_fd = None
+        self.tmp_path = None
 
-def flatten_api_response(article_detail: Dict[str, Any]) -> str:
-    """
-    법령 본문 API의 계층적 JSON 데이터를 재귀적으로 파싱하여,
-    조(條), 항(項), 호(號), 목(目)까지 모든 텍스트를 구조적으로 추출합니다.
-    (들여쓰기 강화 최종 버전)
-    """
+    def __enter__(self):
+        d = os.path.dirname(self.final_path)
+        os.makedirs(d, exist_ok=True)
+        fd, tmp_path = tempfile.mkstemp(prefix=os.path.basename(self.final_path) + ".", suffix=".tmp", dir=d or None)
+        self.tmp_fd = fd
+        self.tmp_path = tmp_path
+        return self
 
-    def ensure_list(obj):
-        if obj is None: return []
-        if isinstance(obj, list): return obj
-        return [obj]
+    def write(self, data: bytes):
+        assert self.tmp_fd is not None
+        os.write(self.tmp_fd, data)
 
-    def parse_mok(mok_list):
-        result = []
-        for mok in ensure_list(mok_list):
-            mok_content = mok.get('목내용', '').strip()
-            if mok_content:
-                # 목(目)은 4칸 들여쓰기
-                result.append(f"    {mok_content}")
-        return result
+    def __exit__(self, exc_type, exc, tb):
+        if self.tmp_fd is not None:
+            os.close(self.tmp_fd)
+        if exc is None and self.tmp_path is not None:
+            os.replace(self.tmp_path, self.final_path)
+        else:
+            if self.tmp_path and os.path.exists(self.tmp_path):
+                try:
+                    os.remove(self.tmp_path)
+                except Exception:
+                    pass
 
-    def parse_ho(ho_list):
-        result = []
-        for ho in ensure_list(ho_list):
-            ho_content = ho.get('호내용', '').strip()
-            line_parts = []
-            if ho_content:
-                # 호(號)는 2칸 들여쓰기
-                line_parts.append(f"  {ho_content}")
+# ----------------------- 임베딩 (플레이스홀더) -------------
+import hashlib, struct
+def embed_text(text: str) -> List[float]:
+    h = hashlib.sha256((text or "").encode("utf-8")).digest()
+    # 32 bytes -> 8 floats (고정 차원)
+    return [struct.unpack('!f', h[i:i+4])[0] for i in range(0, 32, 4)]
 
-            mok_items = ho.get('목')
-            if mok_items:
-                mok_lines = parse_mok(mok_items)
-                if mok_lines:
-                    line_parts.append('\n'.join(mok_lines))
+# ----------------------- 헬퍼 -----------------------------
+def _as_list(x):
+    if x is None:
+        return []
+    return x if isinstance(x, list) else [x]
 
-            if line_parts:
-                result.append('\n'.join(line_parts))
-        return result
+def _sg(d, k, default=None):
+    return d.get(k, default) if isinstance(d, dict) else default
 
-    def parse_hang(hang_list):
-        result = []
-        for hang in ensure_list(hang_list):
-            hang_content = hang.get('항내용', '').strip()
-            line_parts = []
-            if hang_content:
-                line_parts.append(hang_content)
+def _clean(s):
+    return " ".join(str(s).split()) if s else ""
 
-            ho_items = hang.get('호')
-            if ho_items:
-                ho_lines = parse_ho(ho_items)
-                if ho_lines:
-                    line_parts.append('\n'.join(ho_lines))
+def _fs_slug(name: str, maxlen: int = 80) -> str:
+    if not name:
+        return ""
+    s = unicodedata.normalize("NFC", str(name))
+    s = re.sub(r'[\\/:*?"<>|]+', " ", s)
+    s = "".join(ch for ch in s if ch.isprintable())
+    s = re.sub(r"\s+", " ", s).strip()
+    if len(s) > maxlen:
+        s = s[:maxlen].rstrip()
+    return s
 
-            if line_parts:
-                result.append('\n'.join(line_parts))
-        return result
+def _get_law_korean_name(law_json: dict) -> Optional[str]:
+    law = (law_json.get("법령") if isinstance(law_json, dict) else None) or law_json
+    if not isinstance(law, dict):
+        return None
+    return (law.get("법령약칭명")
+            or law.get("법령명_한글")
+            or law.get("법령명")
+            or None)
 
-    # --- 조문(條) 계층 처리 ---
-    jo_no = article_detail.get('조문번호', '')
-    jo_title = article_detail.get('조문제목', '')
-    jo_content = article_detail.get('조문내용', '').strip()
-
-    result_lines = []
-
-    if jo_content:
-        result_lines.append(jo_content)
-    else:
-        jo_prefix = f"제{jo_no}조"
-        if jo_title:
-            jo_prefix += f"({jo_title})"
-        result_lines.append(jo_prefix)
-
-    hang_items = article_detail.get('항')
-    if hang_items:
-        hang_lines = parse_hang(hang_items)
-        if hang_lines:
-            result_lines.append('\n'.join(hang_lines))
-
-    return '\n'.join(result_lines)
-
-def fetch_law_details(law_mst: str) -> List[Dict[str, Any]]:
-    """
-    법령일련번호(law_mst)에 해당하는 모든 조문의 상세 내용을 병렬로 가져옵니다.
-    """
-    list_api_url = f"http://www.law.go.kr/DRF/lawService.do?OC={LAW_API_OC}&target=jo&MST={law_mst}&type=JSON"
-
+def _find_korean_name_from_laws_dir(mst: str) -> Optional[str]:
+    """laws/*.json의 목록 파일에서 MST에 해당하는 한글명을 폴백으로 찾는다."""
     try:
-        logging.info(f"'{law_mst}'에 대한 조문 목록을 가져오는 중...")
-        list_response = requests.get(list_api_url, timeout=15)
-        list_response.raise_for_status()
-        list_data = list_response.json()
-        jo_list = list_data.get("Jo", [])
-    except (requests.RequestException, json.JSONDecodeError) as e:
-        logging.error(f"'{law_mst}'의 조문 목록을 가져오는 데 실패했습니다: {e}")
-        return []
-
-    if not jo_list:
-        logging.warning(f"'{law_mst}'에 대한 조문 목록이 비어있습니다.")
-        return []
-
-    # ----------------------------------------------------
-    # ▼▼▼ 병렬 처리를 위한 핵심 로직 ▼▼▼
-    # ----------------------------------------------------
-
-    all_chunks = []
-    # 한 번에 8명의 보조 직원(스레드)이 동시에 API에 요청을 보냅니다.
-    # 숫자를 늘리면 더 빨라질 수 있지만, 서버에 부담을 줄 수 있습니다. 8 정도가 적당합니다.
-    with ThreadPoolExecutor(max_workers=8) as executor:
-
-        future_to_jo = {
-            executor.submit(fetch_single_article_detail, law_mst, jo_item.get("조문번호")): jo_item
-            for jo_item in jo_list
-        }
-
-        for future in as_completed(future_to_jo):
-            jo_item = future_to_jo[future]
+        laws_dir = "laws"
+        if not os.path.isdir(laws_dir):
+            return None
+        for fn in os.listdir(laws_dir):
+            if not fn.lower().endswith(".json"):
+                continue
+            p = os.path.join(laws_dir, fn)
             try:
-                article_detail = future.result()
-                if article_detail:
-                    text_for_embedding = flatten_api_response(article_detail)
-                    chunk_data = {
-                        "조문번호": jo_item.get("조문번호", ""),
-                        "조문제목": article_detail.get("조문제목", ""),
-                        "조문내용": article_detail, # 원본 JSON 데이터
-                        "text_for_embedding": text_for_embedding, # 가공된 텍스트
-                    }
-                    all_chunks.append(chunk_data)
-            except Exception as exc:
-                jo_no = jo_item.get("조문번호", "알 수 없음")
-                logging.error(f"'{law_mst}'의 조문 '{jo_no}' 상세 정보 처리 중 오류 발생: {exc}")
-
-    logging.info(f"성공적으로 법령 본문을 파싱했습니다. (MST: {law_mst}, 총 조문 수: {len(all_chunks)})")
-    return all_chunks
-
-
-def fetch_single_article_detail(law_mst: str, jo_no: str) -> Optional[Dict[str, Any]]:
-    """
-    단일 조문에 대한 상세 정보를 API로 가져옵니다. (병렬 처리될 작업)
-    """
-    if not jo_no:
+                with open(p, encoding="utf-8") as f:
+                    data = json.load(f)
+            except Exception:
+                continue
+            law_items = (data.get("LawSearch", {}) or {}).get("law", [])
+            if not isinstance(law_items, list):
+                law_items = [law_items]
+            for item in law_items:
+                if str(item.get("법령일련번호")) == str(mst):
+                    return item.get("법령약칭명") or item.get("법령명_한글") or item.get("법령명")
+    except Exception:
         return None
+    return None
 
-    formatted_jo_no = format_jo_no(jo_no)
-    detail_api_url = (
-        f"http://www.law.go.kr/DRF/lawService.do?OC={LAW_API_OC}&target=law"
-        f"&MST={law_mst}&JO={formatted_jo_no}&type=JSON"
-    )
-
+def _make_base_name(mst: str, law_json: dict) -> str:
     try:
-        response = requests.get(detail_api_url, timeout=15)
-        response.raise_for_status()
-        detail_data = response.json()
+        nm = _get_law_korean_name(law_json)
+        if not nm:
+            nm = _find_korean_name_from_laws_dir(mst)
+        return f"{_fs_slug(nm)}_{mst}" if nm else str(mst)
+    except Exception:
+        return str(mst)
 
-        # API 응답에서 실제 조문 상세 정보가 있는 '법령' 객체를 반환합니다.
-        article_detail = detail_data.get("법령", {}).get("조문", [{}])[0]
-        return article_detail
+def _ensure_meta(dst_law: dict, src_law: dict) -> None:
+    """dst_law에 src_law의 주요 메타(법령명 등)를 비어있을 때만 채워 넣는다."""
+    if not isinstance(dst_law, dict) or not isinstance(src_law, dict):
+        return
+    for k in ("법령일련번호", "법령약칭명", "법령명_한글", "법령명", "공포일자", "시행일자"):
+        if dst_law.get(k) is None and src_law.get(k) is not None:
+            dst_law[k] = src_law[k]
 
-    except (requests.RequestException, json.JSONDecodeError) as e:
-        logging.warning(f"조문({jo_no}) 상세 정보 요청 실패: {e}")
-        return None
+# ----------------------- 응답 정규화/평탄화 ----------------
+def _normalize_law(data: Dict[str, Any]) -> Dict[str, Any]:
+    """다양한 응답을 {"법령": { ... , "조문":[...] }}로 통일."""
+    if not isinstance(data, dict):
+        return {"법령": {"조문": []}}
+    law = data.get("법령", data)
+    if isinstance(law, list):
+        law = law[0] if law else {}
+    if not isinstance(law, dict):
+        law = {}
+    arts = law.get("조문")
+    # 일부는 {"조문":{"조문":[...]}} 형태
+    if isinstance(arts, dict) and "조문" in arts:
+        arts = arts["조문"]
+    law["조문"] = _as_list(arts)
+    return {"법령": law}
 
-
-def build_and_save_index(limit: int = None):
-    logging.info("'laws' 디렉터리에서 법령별 개별 DB 생성을 시작합니다.")
-
-    law_files = [os.path.join("laws", f) for f in os.listdir("laws") if f.endswith(".json")]
-    total_files = len(law_files)
-    processed_files_count = 0
-
-    for law_file_path in law_files:
-        if limit is not None and processed_files_count >= limit:
-            logging.info(f"Limit of {limit} files reached. Stopping processing.")
-            break
-
-        processed_files_count += 1
-        processed_files_count += 1
-# ▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼
-# base_filename = os.path.splitext(os.path.basename(law_file_path))[0] # 기존 코드 주석 처리 또는 삭제
-        logging.info(f"({processed_files_count}/{total_files}) '{os.path.basename(law_file_path)}' 파일 처리 시작...")
-# ▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲
-        current_knowledge_base = {}
-        current_texts_to_embed_map = {}
-
-        try:
-            with open(law_file_path, 'r', encoding='utf-8') as f:
-                raw_data = json.load(f)
-        except (IOError, json.JSONDecodeError) as e:
-            logging.error(f"'{law_file_path}' 파일 로드 또는 파싱 실패: {e}")
-            continue
-
-        law_items = raw_data.get("LawSearch", {}).get("law", [])
-        if not isinstance(law_items, list):
-            law_items = [law_items]
-
-        if not law_items: continue
-        item = law_items[0]
-
-        law_mst = item.get("법령일련번호")
-        law_id = item.get("법령ID") # 법령상세링크 생성을 위해 법령ID 사용
-        if not law_mst or not law_id: continue
-
-        article_chunks = fetch_law_details(law_mst)
-
-        for chunk in article_chunks:
-            unique_id = f"{law_mst}-{chunk['조문번호']}"
-            current_knowledge_base[unique_id] = {
-                "법령명한글": item.get("법령명한글", ""),
-                "법령상세링크": f"http://www.law.go.kr/LSW/lsInfoP.do?lsiSeq={law_id}",
-                "조문번호": chunk['조문번호'],
-                "조문제목": chunk['조문제목'],
-                "조문내용": chunk['text_for_embedding']
-            }
-            current_texts_to_embed_map[unique_id] = chunk['text_for_embedding']
-
-        if not current_knowledge_base:
-            logging.warning(f"'{os.path.basename(law_file_path)}'에서 처리할 조문 데이터가 없습니다. 건너뜁니다.")
-            continue
-
-        # ▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼
-        # 고유한 출력 파일 이름 생성 (한글 대신 법령일련번호 사용)
-        base_filename = law_mst  # 예: "272927"
-        output_kb_file = f"{base_filename}_answers.json"
-        output_index_file = f"{base_filename}_faiss_index.bin"
-        output_id_map_file = f"{base_filename}_faiss_id_map.json"
-        logging.info(f"총 {len(current_knowledge_base)}개 조문 수집 완료. '{output_kb_file}' 파일로 저장합니다.")
-        with open(output_kb_file, 'w', encoding='utf-8') as f:
-            json.dump(current_knowledge_base, f, ensure_ascii=False, indent=4)
-        # ▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲    
-
-        logging.info(f"'{base_filename}'에 대한 Faiss 인덱스 생성을 시작합니다...")
-        texts_to_embed = list(current_texts_to_embed_map.values())
-        if not texts_to_embed: continue
-
-        faiss_ids = list(range(len(texts_to_embed)))
-        temp_id_map = {i: k for i, k in enumerate(current_texts_to_embed_map.keys())}
-
-        embeddings = genai.embed_content(model=EMBEDDING_MODEL, content=texts_to_embed, task_type="RETRIEVAL_DOCUMENT")['embedding']
-        embeddings_np = np.array(embeddings, dtype='float32')
-        d = embeddings_np.shape[1]
-        new_index = faiss.IndexFlatL2(d)
-        new_index = faiss.IndexIDMap(new_index)
-        new_index.add_with_ids(embeddings_np, np.array(faiss_ids))
-
-        faiss.write_index(new_index, output_index_file)
-        logging.info(f"Faiss 인덱스를 '{output_index_file}'에 저장했습니다.")
-
-        with open(output_id_map_file, 'w', encoding='utf-8') as f:
-            json.dump(temp_id_map, f)
-        logging.info(f"ID 맵을 '{output_id_map_file}'에 저장했습니다.")
-
-    logging.info("모든 법령 파일에 대한 개별 DB 생성이 완료되었습니다.")
-
-# ==================================================================================
-# ▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲ 핵심 수정 영역 END ▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲
-# ==================================================================================
-
-def get_embedding(text: str, task_type="RETRIEVAL_DOCUMENT") -> list[float]:
-    """Gemini API를 호출하여 텍스트 임베딩을 반환합니다."""
-    if task_type == "RETRIEVAL_DOCUMENT":
-        title = "산업안전보건법 관련 조항" if "산업안전" in text else "법률 조항"
-        result = genai.embed_content(
-            model=EMBEDDING_MODEL,
-            content=text,
-            title=title,
-            task_type=task_type)
-    else:
-        result = genai.embed_content(
-            model=EMBEDDING_MODEL,
-            content=text,
-            task_type=task_type)
-    return result['embedding']
-
-def load_index():
+def _get_articles_any_shape(law_json):
     """
-    서버 시작 시 호출될 함수.
-    FAISS 인덱스와 원본 데이터를 메모리에 로드합니다.
+    법령['조문']이 다음 중 무엇이든 모두 '실제 조문' 리스트로 평탄화:
+    - [ {조문번호/조문내용/항...}, ... ] (전통형)
+    - [ {"조문단위":[ {...}, {...} ]}, ... ] (래퍼형)
+    - {"조문단위":[ ... ]} (dict 단일)
     """
-    global index, id_map, knowledge_base
-    required_files = [FAISS_INDEX_FILE, ID_MAP_FILE, KNOWLEDGE_BASE_FILE]
-    for f in required_files:
-        if not os.path.exists(f):
-            logging.error(f"'{f}' 파일이 없습니다. build_db.py를 먼저 실행하여 DB를 생성하세요.")
-            return
+    law = _sg(law_json, "법령") or law_json
+    raw = _sg(law, "조문")
+    items: List[Dict[str, Any]] = []
+    if isinstance(raw, dict):
+        if "조문단위" in raw:
+            items.extend(_as_list(raw["조문단위"]))
+        else:
+            items.append(raw)
+        return items
+    for a in _as_list(raw):
+        if isinstance(a, dict) and "조문단위" in a:
+            items.extend(_as_list(a["조문단위"]))
+        else:
+            items.append(a)
+    return items
 
-    logging.info(f"'{FAISS_INDEX_FILE}'에서 인덱스를 로드합니다.")
-    index = faiss.read_index(FAISS_INDEX_FILE)
+_heading_re = re.compile(r"^(제\d+(편|장|절|관)\b|부칙\b|별표\b|서식\b)")
 
-    logging.info(f"'{ID_MAP_FILE}'에서 ID맵을 로드합니다.")
-    with open(ID_MAP_FILE, 'r', encoding='utf-8') as f:
-        id_map = {int(k): v for k, v in json.load(f).items()}
+def _is_heading_only(art: dict) -> bool:
+    """항/호/목이 없고 제목/본문이 '편/장/절/관/부칙/별표/서식'인 헤딩인지."""
+    if not STRIP_HEADINGS:
+        return False
+    has_hang = bool(_sg(art, "항"))
+    if has_hang:
+        return False
+    title = _clean(_sg(art, "조문제목"))
+    body  = _clean(_sg(art, "조문내용"))
+    s = title or body
+    if not s:
+        return True
+    return bool(_heading_re.match(s))
 
-    logging.info(f"'{KNOWLEDGE_BASE_FILE}'에서 knowledge base를 로드합니다.")
-    with open(KNOWLEDGE_BASE_FILE, 'r', encoding='utf-8') as f:
-        knowledge_base = json.load(f)
-
-def search_vectors(query: str, k: int = 5) -> List[Dict[str, Any]]:
-    """사용자 쿼리를 임베딩하고 미리 로드된 Faiss 인덱스에서 가장 유사한 k개의 결과를 찾습니다."""
-    if index is None:
-        logging.error("인덱스가 로드되지 않았습니다. 서버 로그를 확인하세요.")
-        return []
-
-    query_embedding = get_embedding(query, task_type="RETRIEVAL_QUERY")
-    query_vector = np.array([query_embedding], dtype='float32')
-
-    distances, indices = index.search(query_vector, k)
-
-    results = []
-    for i in range(len(indices[0])):
-        if indices[0][i] == -1:
+# ----------------------- 구조화 추출(조/항/목) ------------
+def extract_units(law_json: Dict[str, Any]) -> List[Dict[str, Any]]:
+    units: List[Dict[str, Any]] = []
+    for art in _get_articles_any_shape(law_json):
+        if not isinstance(art, dict):
+            continue
+        if _is_heading_only(art):
             continue
 
-        faiss_id = indices[0][i]
-        original_id = id_map.get(faiss_id)
-
-        if original_id and original_id in knowledge_base:
-            retrieved_data = knowledge_base[original_id]
-            results.append({
-                "id": original_id,
-                "score": float(distances[0][i]),
-                "data": retrieved_data
+        jo = _clean(_sg(art, "조문번호") or _sg(art, "조번호") or _sg(art, "조문키"))
+        jo_title = _clean(_sg(art, "조문제목"))
+        jo_text  = _clean(_sg(art, "조문내용"))
+        if jo_title or jo_text:
+            units.append({
+                "level": "조",
+                "jo": jo or None,
+                "hang": None,
+                "mok": None,
+                "title": jo_title or None,
+                "text": jo_text or None,
+                "path": f"제{jo}조" if jo else "조문",
             })
 
+        for h in _as_list(_sg(art, "항")):
+            hang_no  = _clean(_sg(h, "항번호"))
+            hang_txt = _clean(_sg(h, "항내용") or _sg(h, "내용"))
+            if hang_no or hang_txt:
+                units.append({
+                    "level": "항",
+                    "jo": jo or None,
+                    "hang": hang_no or None,
+                    "mok": None,
+                    "title": None,
+                    "text": hang_txt or None,
+                    "path": " > ".join([p for p in [f"제{jo}조" if jo else None,
+                                                    f"제{hang_no}항" if hang_no else "항"] if p]),
+                })
+
+            children = _as_list(_sg(h, "목")) or _as_list(_sg(h, "호"))
+            for ch in children:
+                num = _clean(_sg(ch, "호번호") or _sg(ch, "목번호") or _sg(ch, "번호"))
+                txt = _clean(_sg(ch, "호내용") or _sg(ch, "목내용") or _sg(ch, "내용"))
+                if num or txt:
+                    units.append({
+                        "level": "목",
+                        "jo": jo or None,
+                        "hang": hang_no or None,
+                        "mok": num or None,
+                        "title": None,
+                        "text": txt or None,
+                        "path": " > ".join([p for p in [f"제{jo}조" if jo else None,
+                                                        f"제{hang_no}항" if hang_no else None,
+                                                        (f"{num}호" if num else None)] if p]),
+                    })
+    return units
+
+# ----------------------- 수집(메타 보존+페이징) -----------
+def fetch_full_law(client: LawAPIClient, mst: str) -> Dict[str, Any]:
+    """
+    1) 전체 호출 → 조문/본문이 있으면 그대로
+    2) 부족하면 목록→상세(JO 후보)로 병합
+    3) 그래도 부족하면 JO=000100,000200,... 페이징 (연속 빈 응답 n회면 중단)
+       - 상한: LAW_JO_MAX_PAGES(기본 80), 빈연속: LAW_JO_EMPTY_STREAK(기본 5)
+    4) 최종 {"법령": {...}} 반환 + 디버그 JSON 저장
+    """
+    max_pages = int(os.getenv("LAW_JO_MAX_PAGES", "80"))
+    empty_streak_max = int(os.getenv("LAW_JO_EMPTY_STREAK", "5"))
+
+    # 1) 기본
+    base = client.get_law(mst)
+    try:
+        if list(extract_units(_normalize_law(base))):
+            merged0 = _normalize_law(base)
+            # base 메타 보존
+            _ensure_meta(merged0["법령"], _normalize_law(base)["법령"])
+            _dump_debug_json(f"laws/debug_law_{mst}.json", merged0)
+            return merged0
+    except Exception:
+        pass
+
+    # 2) 목록→상세 (가능하면)
+    merged = _normalize_law(base)
+    _ensure_meta(merged["법령"], _normalize_law(base)["법령"])  # ★ base 메타 주입
+
+    jos = _iter_jo_numbers_for_list_detail(merged)  # 목록 기반 JO 후보
+    if jos:
+        for jo in jos:
+            try:
+                part = client.get_law(mst, jo=jo)
+                dst = merged["법령"]
+                src = _normalize_law(part)["법령"]
+                _ensure_meta(dst, src)  # ★ 상세의 메타도 채우기
+                dst_arts = _as_list(dst.get("조문"))
+                src_arts = _as_list(src.get("조문"))
+                before = len(dst_arts)
+                dst_arts.extend(src_arts)
+                dst["조문"] = dst_arts
+                added = len(dst_arts) - before
+                if added:
+                    logger.info(f"MST {mst} JO={jo} merged {added} (total={len(dst_arts)})")
+            except Exception as e:
+                logger.warning(f"MST {mst} JO={jo} merge failed (list→detail): {e} (continue)")
+        try:
+            if list(extract_units(merged)):
+                _dump_debug_json(f"laws/debug_law_{mst}.json", merged)
+                return merged
+        except Exception:
+            pass
+
+    # 3) JO 페이징 폴백
+    empty_streak = 0
+    for i in range(1, max_pages + 1):
+        jo6 = f"{i:04d}00"  # 000100, 000200, ...
+        try:
+            part = client.get_law(mst, jo=jo6)
+            src = _normalize_law(part)["법령"]
+            _ensure_meta(merged["법령"], src)  # ★ JO의 메타도 채우기
+            src_arts = _as_list(src.get("조문"))
+            if not src_arts:
+                empty_streak += 1
+                logger.info(f"MST {mst} JO={jo6} merged 0 (empty={empty_streak})")
+                if empty_streak >= empty_streak_max:
+                    logger.info(f"MST {mst} stop paging after {empty_streak} consecutive empties")
+                    break
+                continue
+            empty_streak = 0
+            dst = merged["법령"]
+            dst_arts = _as_list(dst.get("조문"))
+            before = len(dst_arts)
+            dst_arts.extend(src_arts)
+            dst["조문"] = dst_arts
+            added = len(dst_arts) - before
+            logger.info(f"MST {mst} JO={jo6} merged {added} (total={len(dst_arts)})")
+        except Exception as e:
+            logger.warning(f"MST {mst} JO={jo6} fetch failed: {e} (continue)")
+
+    # laws/*.json 폴더 폴백으로 이름 주입(없을 때만)
+    nm = _find_korean_name_from_laws_dir(mst)
+    if nm and not (_sg(merged["법령"], "법령약칭명") or _sg(merged["법령"], "법령명_한글") or _sg(merged["법령"], "법령명")):
+        merged["법령"]["법령명_한글"] = nm
+
+    # 결과 검증/저장
+    if not list(extract_units(merged)):
+        raise RuntimeError(f"No parsable articles for MST {mst}")
+    _dump_debug_json(f"laws/debug_law_{mst}.json", merged)
+    return merged
+
+def _iter_jo_numbers_for_list_detail(law_json: Dict[str, Any]) -> List[str]:
+    """목록의 조문번호에서 JO 후보(6자리) 추출. 목록→상세 병합에 사용."""
+    jos: List[str] = []
+    seen = set()
+    for art in _get_articles_any_shape(law_json):
+        raw = str(_sg(art, "조문번호") or _sg(art, "조문일련번호") or "").strip()
+        if not raw:
+            continue
+        # '10' -> 001000, '10의2' -> 001002
+        m = re.match(r"^\s*(\d+)(?:\s*의\s*(\d+))?\s*$", raw)
+        if m:
+            main = int(m.group(1))
+            sub = int(m.group(2) or 0)
+            jo = f"{main:04d}{sub:02d}"
+        else:
+            digits = re.findall(r"\d+", raw)
+            if not digits:
+                continue
+            main = int(digits[0]); sub = int(digits[1]) if len(digits) > 1 else 0
+            jo = f"{main:04d}{sub:02d}"
+        if jo not in seen:
+            seen.add(jo); jos.append(jo)
+    return jos
+
+# ----------------------- 디버그 저장 ----------------------
+def _dump_debug_json(path: str, obj: Dict[str, Any]) -> None:
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(obj, f, ensure_ascii=False, indent=2)
+
+# ----------------------- 인덱스 빌드 ----------------------
+def build_index_for_mst(mst: str, out_dir: str = "faiss_indexes", client: Optional[LawAPIClient] = None) -> Dict[str, Any]:
+    client = client or LawAPIClient()
+    t0 = time.monotonic()
+
+    # 0) 수집
+    law_json = fetch_full_law(client, mst)
+
+    # 1) 저장 경로(예쁜 파일명 적용)
+    base = _make_base_name(mst, law_json) if PRETTY_NAMES else str(mst)
+    os.makedirs(out_dir, exist_ok=True)
+
+    if BUNDLE_PER_LAW:
+        law_dir = os.path.join(out_dir, base)
+        os.makedirs(law_dir, exist_ok=True)
+        units_path   = os.path.join(law_dir, "units.json")
+        answers_path = os.path.join(law_dir, "answers.json")
+        idmap_path   = os.path.join(law_dir, "faiss_id_map.json")
+        index_path   = os.path.join(law_dir, "faiss_index.bin")
+    else:
+        units_path   = os.path.join(out_dir, f"{base}_units.json")
+        answers_path = os.path.join(out_dir, f"{base}_answers.json")
+        idmap_path   = os.path.join(out_dir, f"{base}_faiss_id_map.json")
+        index_path   = os.path.join(out_dir, f"{base}_faiss_index.bin")
+
+    # 2) 구조화 추출
+    units = extract_units(law_json)
+    if not units:
+        raise RuntimeError(f"MST {mst}: 추출된 조/항/목 단위가 없습니다.")
+
+    # 3) units 저장
+    with AtomicWriter(units_path) as aw:
+        aw.write(json.dumps(units, ensure_ascii=False, indent=2).encode('utf-8'))
+
+    # 4) 임베딩 입력 & id_map
+    texts_to_embed: List[str] = []
+    id_map: List[Dict[str, Any]] = []
+    for i, u in enumerate(units):
+        combined = ((u.get("title") or "") + "\n" if u.get("title") else "") + (u.get("text") or "")
+        combined = combined.strip()
+        texts_to_embed.append(combined)
+        id_map.append({
+            "faiss_id": i,
+            "mst": mst,
+            "base": base,
+            "level": u["level"],
+            "jo": u.get("jo"),
+            "hang": u.get("hang"),
+            "mok": u.get("mok"),
+            "path": u.get("path"),
+            "title": u.get("title"),
+        })
+
+    # 5) answers 저장
+    answers_payload = [
+        {
+            "id": i,
+            "level": u["level"],
+            "jo": u.get("jo"),
+            "hang": u.get("hang"),
+            "mok": u.get("mok"),
+            "path": u.get("path"),
+            "title": u.get("title"),
+            "text": texts_to_embed[i],
+        }
+        for i, u in enumerate(units)
+    ]
+    with AtomicWriter(answers_path) as aw:
+        aw.write(json.dumps(answers_payload, ensure_ascii=False, indent=2).encode('utf-8'))
+
+    # 6) id_map 저장
+    with AtomicWriter(idmap_path) as aw:
+        aw.write(json.dumps(id_map, ensure_ascii=False, indent=2).encode('utf-8'))
+
+    # 7) FAISS 인덱스 저장 (미설치 시 placeholder)
+    if faiss is not None and texts_to_embed:
+        import numpy as np
+        xb = np.array([embed_text(t) for t in texts_to_embed], dtype='float32')
+        d = xb.shape[1]
+        index = faiss.IndexFlatL2(d)
+        index.add(xb)
+        faiss.write_index(index, index_path)
+    else:
+        with AtomicWriter(index_path) as aw:
+            aw.write(b"FAISS_NOT_AVAILABLE")
+
+    dt = time.monotonic() - t0
+    logger.info("MST %s build finished in %.2fs (units=%d)", mst, dt, len(units))
+    return {"mst": mst, "units": len(units), "duration_sec": dt, "out_dir": out_dir, "base": base}
+
+def build_indexes(msts: List[str], out_dir: str = "faiss_indexes") -> List[Dict[str, Any]]:
+    results = []
+    oc = os.environ.get("LAW_API_OC")
+    shared_client = LawAPIClient(oc) if oc else LawAPIClient()
+    for mst in msts:
+        try:
+            results.append(build_index_for_mst(mst, out_dir, client=shared_client))
+        except Exception as e:
+            logger.error("build failed for %s: %s", mst, e)
     return results
+
+# ----------------------- 메인 (선택) ----------------------
+if __name__ == "__main__":
+    import argparse, glob
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--msts', nargs='+', help='List of MST ids to build')
+    parser.add_argument('--out-dir', default='faiss_indexes')
+    args = parser.parse_args()
+
+    msts = args.msts or []
+    if not msts:
+        # laws/*.json 목록에서 MST 자동 추출
+        for p in glob.glob("laws/*.json"):
+            try:
+                data = json.load(open(p, encoding="utf-8"))
+                law_items = (data.get("LawSearch", {}) or {}).get("law", [])
+                if not isinstance(law_items, list):
+                    law_items = [law_items]
+                for item in law_items:
+                    mst = item.get("법령일련번호")
+                    if mst and str(mst) not in msts:
+                        msts.append(str(mst))
+            except Exception:
+                continue
+
+    if not msts:
+        logger.error("크롤링할 MST가 없습니다. --msts 인자 또는 laws/*.json을 확인하세요.")
+        raise SystemExit(1)
+
+    res = build_indexes(msts, args.out_dir)
+    print(json.dumps(res, ensure_ascii=False, indent=2))

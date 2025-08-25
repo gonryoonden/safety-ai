@@ -1,0 +1,149 @@
+개발자 전달용 메모(요약 + 실행 지시안)입니다.
+
+---
+
+# TL;DR
+
+* 증상: `HTTP 200 직후 JSONDecodeError("Expecting value ...")`
+* 근본원인:
+
+  1. **동시성 과다 + 인스턴스별 레이트리미터**로 인해 DRF가 **200 + HTML(스로틀/안내문)** 을 돌려줌 → `resp.json()` 파싱 실패.  &#x20;
+  2. 목록(JSON)의 `법령상세링크`는 **기본이 HTML** 이라 그대로 때리면 JSON 파싱 실패 위험. (우린 지금 `get_law`가 `type=JSON`으로 치고 있어도, 서버가 스로틀이면 여전히 HTML을 반환할 수 있음) &#x20;
+* 조치:
+  A) **전역 QPS 제어 + 동시성 축소 + 세션/리미터 공유**
+  B) **“200이지만 JSON 아님” 감지 → 로깅 + 지수 백오프 재시도**
+  C) **가이드 준수:** `lawService`는 `target=law`, `MST 또는 ID` 중 하나 + `type=JSON` 고정, `JO` 6자리 규격 유지. &#x20;
+
+---
+
+## 무엇이 문제였나 (근거)
+
+* `LawAPIClient`가 **매 인스턴스마다** `RateLimiter`를 만들고 있음 → 스레드 수만큼 QPS가 늘어남.&#x20;
+* 인덱스 빌드 경로에서 **MST마다 새로운 `LawAPIClient()`** 생성 + 기본 `MAX_WORKERS=8`로 병렬 실행. (전역 QPS 통제가 안 됨) &#x20;
+* 응답 파싱이 **무조건 `resp.json()`** 이라, 서버가 200으로 HTML/빈본문을 줄 때 즉시 예외. (컨텐츠 타입/미리보기 로깅 없음)&#x20;
+* 참고로, 가이드상 `lawService`는 **`type=JSON` 필수**, `JO`는 6자리(`000200` 등) 규격. 목록의 `법령상세링크` 예시는 `type=HTML`.  &#x20;
+
+---
+
+## 변경 요청 (실행 순서대로)
+
+### 1) 동시성/레이트리미팅
+
+* 기본 실행은 **순차(동시성 1)** 로: `MAX_WORKERS=1`, `MAX_RPS=1~2`부터 검증.&#x20;
+* **클라이언트/세션/리미터 공유**: 한 프로세스 내에서 **하나의 `LawAPIClient`** 를 생성해 모든 MST 작업에 재사용.
+
+**패치 스케치 — `vector_search_service.py`**
+
+```python
+# before
+def build_index_for_mst(mst: str, out_dir: str = "faiss_indexes") -> Dict[str, Any]:
+    client = LawAPIClient()
+    ...
+
+# after
+def build_index_for_mst(mst: str, out_dir: str = "faiss_indexes", client: Optional[LawAPIClient] = None) -> Dict[str, Any]:
+    client = client or LawAPIClient()
+    ...
+
+def build_indexes(msts: List[str], out_dir: str = "faiss_indexes") -> List[Dict[str, Any]]:
+    results = []
+    shared_client = LawAPIClient()  # 세션/리미터 공유
+    # 순차 실행(안정성 우선). 병렬 필요시에도 shared_client를 넘길 것.
+    for mst in msts:
+        results.append(build_index_for_mst(mst, out_dir, client=shared_client))
+    return results
+```
+
+(현 코드에서 `MAX_WORKERS` 기본 8, `LawAPIClient()` 를 빌드 함수 안에서 새로 만듭니다. 이를 공유 형태로 바꿔주세요.) &#x20;
+
+> 선택지: 리미터를 **모듈 전역 싱글톤**으로 만들어 모든 클라이언트가 공유하게 하는 방식도 가능.
+
+---
+
+### 2) “200 OK **but not JSON**” 방어막 + 재시도
+
+* **Content-Type/본문 스니펫 로깅** 후, JSON이 아니면 **지수 백오프(예: 1s/2s)로 1\~2회 재시도**.
+* 아래 헬퍼를 `utils.py`에 추가하고, `search_law/get_law/search_attachments`의 `return resp.json()`을 이 헬퍼로 교체.
+
+**패치 스케치 — `utils.py`**
+
+```python
+def _parse_response_as_json(resp: requests.Response) -> Dict[str, Any]:
+    ct = (resp.headers.get("Content-Type") or "").lower()
+    body = resp.text or ""
+    if "application/json" in ct:
+        try:
+            return resp.json()
+        except Exception as e:
+            logger.error("JSON decode failed ct=%s len=%d preview=%r", ct, len(body), body[:200])
+            raise
+    if not body.strip():
+        logger.error("Empty body with 200 OK ct=%s", ct)
+        raise RuntimeError("Empty 200 response")
+    if body.lstrip().startswith("<"):  # HTML/XML 가능
+        logger.error("Non-JSON body ct=%s len=%d preview=%r", ct, len(body), body[:200])
+        raise RuntimeError("Non-JSON (HTML/XML) response")
+    logger.error("Unexpected content-type ct=%s preview=%r", ct, body[:200])
+    raise RuntimeError("Unexpected non-JSON response")
+
+def _get_json_with_retry(session_get):
+    # 호출부에서 lambda로 주입 or 간단히 _get 안에서 사용
+    for i in range(3):  # 0,1,2
+        try:
+            resp = session_get()
+            return _parse_response_as_json(resp)
+        except Exception as e:
+            if i == 2:
+                raise
+            time.sleep(1.0 * (2 ** i))
+
+# 사용 예
+def search_law(...):
+    resp = self._get("/DRF/lawSearch.do", {...})
+    return _parse_response_as_json(resp)
+
+def get_law(...):
+    resp = self._get("/DRF/lawService.do", params)
+    return _parse_response_as_json(resp)
+```
+
+현재는 `get_law()` 등에서 **무조건 `resp.json()`** 만 호출합니다. (실패시 스택이 바로 터져 폴백도 소용없습니다.)&#x20;
+
+---
+
+### 3) API 가이드 준수(요청 파라미터/엔드포인트)
+
+* 본문 조회: `target=law`, `type=JSON`, **`MST` 또는 `ID` 중 하나**만 사용. `JO`는 6자리(`조4+가지2`).&#x20;
+* 목록에서 받은 `법령상세링크`는 **기본 `type=HTML`** 예시이므로, 링크를 재사용하지 말고 **반드시 MST만 꺼내 `lawService?type=JSON`으로 재호출**.&#x20;
+* 별표/서식은 `target=licbyl`로 별도 호출. (본문 스키마와 혼용 금지)&#x20;
+
+---
+
+## 운영 파라미터(초기 권장값)
+
+```bash
+# 안전한 1차 검증용
+set MAX_WORKERS=1
+set MAX_RPS=1
+python build_db.py
+```
+
+* 기대 결과: `MST xxx: N clauses detected` 에서 **N>0**로 나오고, 빌드 결과 JSON에 `clauses`가 0이 아니어야 함. (현재는 0)&#x20;
+
+---
+
+## 검증 체크리스트
+
+* [ ] 로그에 `Content-Type`/프리뷰가 남고, **Non-JSON 응답**일 때 재시도 후 성공하는지.
+* [ ] `build_indexes` 경로에서 **하나의 `LawAPIClient`** 만 생성되는지.&#x20;
+* [ ] `MAX_WORKERS`/`MAX_RPS`를 점진 상향해도 JSONDecodeError 재발이 없는지.
+* [ ] `JO` 폴백 경로 호출 시에도 동일 파서/재시도가 적용되는지. &#x20;
+
+---
+
+## 참고 스니펫(가이드 근거)
+
+* `lawService` 요청 파라미터: `type=HTML/XML/JSON`, `ID 또는 MST 중 하나`, `JO=6자리` 명시.&#x20;
+* 목록 JSON의 `법령상세링크`는 `type=HTML`로 내려옴(예시). &#x20;
+
+---
