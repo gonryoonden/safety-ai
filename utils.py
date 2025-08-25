@@ -147,8 +147,16 @@ class LawAPIClient:
         return _get_json_with_retry(lambda: self._get("/DRF/lawService.do", params))
 
     # 별표/서식
-    def search_attachments(self, query: str, page: int = 1, display: int = 50, sort: str = "lasc",
-                           org: Optional[str] = None, knd: Optional[str] = None) -> Dict[str, Any]:
+    def search_attachments(
+        self,
+        query: str,
+        page: int = 1,
+        display: int = 50,
+        sort: str = "lasc",
+        org: Optional[str] = None,
+        knd: Optional[str] = None,
+        search: Optional[int] = None,  # 1:별표/서식명, 2:해당법령검색, 3:별표본문검색
+    ) -> Dict[str, Any]:
         params = {
             "target": "licbyl",
             "type": "JSON",
@@ -161,6 +169,9 @@ class LawAPIClient:
             params["org"] = org
         if knd:
             params["knd"] = knd
+        if search is not None:
+            params["search"] = int(search)
+
         return _get_json_with_retry(lambda: self._get("/DRF/lawSearch.do", params))
 
 def _safe_get(d: Any, key: str, default=None):

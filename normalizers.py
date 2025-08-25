@@ -19,6 +19,8 @@ _JO_RE = re.compile(r'(?:제\s*)?(\d+)\s*조(?:\s*의\s*(\d+))?', re.UNICODE)
 # 본문 내 개정일 추출: "<개정 2012.3.5, 2019.12.26>" 같은 패턴 지원
 _AMEND_TAG_RE = re.compile(r'<\s*개정[^>]*>', re.UNICODE)
 _DATE_RE = re.compile(r'(\d{4})\.(\d{1,2})\.(\d{1,2})')
+# 본문 내 '별표 n(의m)' 참조 추출용
+_ANNEX_REF_RE = re.compile(r"별표\s*(\d+)(?:\s*의\s*(\d+))?")
 
 # -------------------- 기본 정규화 함수 --------------------
 def circled_to_int(s: Optional[str]) -> Optional[int]:
@@ -112,14 +114,18 @@ def _extract_amend_dates(text: Optional[str]) -> List[str]:
     return out
 
 # -------------------- 메인 후처리 --------------------
-def postprocess_units(units: List[Dict[str, Any]], law_meta: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
+
+def postprocess_units(
+    units: List[Dict[str, Any]],
+    law_meta: Optional[Dict[str, Any]] = None
+) -> List[Dict[str, Any]]:
     """
     입력: 원시 units(list of dict)
     출력: 아래 필드들을 보강/정규화 + 보수적 중복 제거
       - hang_norm(int), mok_norm(int)
       - jo_norm(str: '3'|'4의2'), jo_num(int), jo_suffix(int|None)
-      - display_path_norm('제n조 제m항 제r호')
-      - amended_on(list[str: 'YYYY-MM-DD'])  # 본문 '<개정 ...>'에서 추출
+      - display_path_norm('제n조 제m항 제r호')  # 조/항/목일 때
+      - amended_on(list[str: 'YYYY-MM-DD'])    # 본문 '<개정 ...>'에서 추출
       - (있을 경우) effective_date/promulgation_date/revision_type
     """
     seen = set()
@@ -130,34 +136,48 @@ def postprocess_units(units: List[Dict[str, Any]], law_meta: Optional[Dict[str, 
     prom_date = (law_meta or {}).get("공포일자")
 
     for u in units:
+        level = u.get("level")
+
         # 1) 항/호 숫자 정규화
         hang_norm = circled_to_int(u.get("hang"))
-        mok_norm = normalize_mok(u.get("mok"))
+        mok_norm  = normalize_mok(u.get("mok"))
         u["hang_norm"] = hang_norm
-        u["mok_norm"] = mok_norm
+        u["mok_norm"]  = mok_norm
 
         # 2) 조(의조 포함) 표준화
         jo_norm, jo_num, jo_suffix = _normalize_jo_from_fields(
-            u.get("jo"),
-            u.get("path"),
-            u.get("title"),
-            u.get("text"),
+            u.get("jo"), u.get("path"), u.get("title"), u.get("text")
         )
         if jo_norm:
-            u["jo_norm"] = jo_norm
-            u["jo_num"] = jo_num
+            u["jo_norm"]   = jo_norm
+            u["jo_num"]    = jo_num
             u["jo_suffix"] = jo_suffix
+
+        # 3) 표시 경로
+        if level in ("조", "항", "목"):
             u["display_path_norm"] = build_display_path(
                 jo_norm or (u.get("jo") or "").strip(),
-                u.get("hang_norm"),
-                u.get("mok_norm"),
-    )
+                hang_norm, mok_norm
+            )
+        else:
+            # 별표/부칙 등은 path 그대로 사용(없으면 title/level 폴백)
+            u["display_path_norm"] = u.get("path") or (u.get("title") or level or "")
+
         # 4) 본문에서 개정일 추출
         amends = _extract_amend_dates(u.get("text"))
         if amends:
             u["amended_on"] = amends
 
-        # 5) 법령 메타 주입(있을 때만)
+        # 5) 본문 내 '별표 n(의m)' 참조 → annex_refs
+        if level in ("조", "항", "목"):
+            refs = []
+            for m in _ANNEX_REF_RE.finditer(u.get("text") or ""):
+                base, ext = m.group(1), m.group(2)
+                refs.append(f"{int(base)}의{int(ext)}" if ext else str(int(base)))
+            if refs:
+                u["annex_refs"] = sorted(set(refs), key=lambda x: (len(x), x))
+
+        # 6) 법령 메타 주입(있을 때만)
         if eff_date:
             u["effective_date"] = eff_date
         if prom_date:
@@ -165,7 +185,7 @@ def postprocess_units(units: List[Dict[str, Any]], law_meta: Optional[Dict[str, 
         if rev_type:
             u["revision_type"] = rev_type
 
-        # 6) 보수적 중복 제거(경로/텍스트 동일시 스킵)
+        # 7) 보수적 중복 제거(경로/텍스트 동일시 스킵)
         key = unit_stable_key(u)
         if key in seen:
             continue

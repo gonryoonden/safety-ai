@@ -111,13 +111,54 @@ def _fs_slug(name: str, maxlen: int = 80) -> str:
     return s
 
 def _get_law_korean_name(law_json: dict) -> Optional[str]:
-    law = (law_json.get("법령") if isinstance(law_json, dict) else None) or law_json
-    if not isinstance(law, dict):
+    """
+    법령명(한글)을 최대한 보수적으로 찾아 반환.
+    - 1차: {"법령": {...}} 바로 아래에서 표준 키 조회
+    - 2차: 중첩 전체를 깊이 우선으로 탐색
+    - 3차: 키 변형(언더스코어 없는 "법령명한글" 등)까지 허용
+    """
+    if not isinstance(law_json, dict):
         return None
-    return (law.get("법령약칭명")
-            or law.get("법령명_한글")
-            or law.get("법령명")
-            or None)
+    law = law_json.get("법령") if isinstance(law_json.get("법령"), dict) else law_json
+
+    # 후보 키들(우선순위대로)
+    PREFERRED_KEYS = [
+        "법령약칭명", "법령명_한글", "법령명",
+        "법령명한글", "한글법령명", "법령한글명",
+    ]
+
+    # 1) 얕은 검색
+    for k in PREFERRED_KEYS:
+        v = law.get(k) if isinstance(law, dict) else None
+        if isinstance(v, (str, int)) and str(v).strip():
+            return str(v).strip()
+
+    # 2) 깊은 탐색
+    def walk(obj):
+        if isinstance(obj, dict):
+            # 우선 표준 키들
+            for k in PREFERRED_KEYS:
+                v = obj.get(k)
+                if isinstance(v, (str, int)) and str(v).strip():
+                    return str(v).strip()
+            # 그 다음 전체 키 스캔
+            for k, v in obj.items():
+                # 키 정규화(언더스코어 제거/소문자)
+                kk = re.sub(r"[_\s]+", "", str(k)).lower()
+                if kk in ("법령명한글", "한글법령명", "법령한글명"):
+                    if isinstance(v, (str, int)) and str(v).strip():
+                        return str(v).strip()
+                res = walk(v)
+                if res:
+                    return res
+        elif isinstance(obj, list):
+            for it in obj:
+                res = walk(it)
+                if res:
+                    return res
+        return None
+
+    return walk(law)
 
 def _find_korean_name_from_laws_dir(mst: str) -> Optional[str]:
     """laws/*.json의 목록 파일에서 MST에 해당하는 한글명을 폴백으로 찾는다."""
@@ -218,59 +259,305 @@ def _is_heading_only(art: dict) -> bool:
     return bool(_heading_re.match(s))
 
 # ----------------------- 구조화 추출(조/항/목) ------------
+# ----------------------- 구조화 추출(조/항/목) ------------
 def extract_units(law_json: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """
+    본문(조/항/목) 유닛화.
+    - 조(level='조'): 조문번호/제목/내용
+    - 항(level='항'): 항번호/내용
+    - 목(level='목'): 목(또는 호) 번호/내용
+    path 예시: "제14조", "제14조 > 제③항", "제14조 > 제③항 > 2.호"
+    """
     units: List[Dict[str, Any]] = []
-    for art in _get_articles_any_shape(law_json):
-        if not isinstance(art, dict):
-            continue
-        if _is_heading_only(art):
+
+    def _stringify(v) -> str:
+        # dict/list/str 어떤 형태든 텍스트로 안전 변환
+        if isinstance(v, str):
+            return v
+        if isinstance(v, dict):
+            parts = []
+            for vv in v.values():
+                s = _stringify(vv).strip()
+                if s:
+                    parts.append(s)
+            return "\n".join(parts)
+        if isinstance(v, (list, tuple)):
+            parts = []
+            for vv in v:
+                s = _stringify(vv).strip()
+                if s:
+                    parts.append(s)
+            return "\n".join(parts)
+        return str(v or "")
+
+    articles = _get_articles_any_shape(law_json)  # 다양한 형태의 '조문'을 평탄화
+    for art in articles:
+        if _is_heading_only(art):  # 편/장/절/관/부칙/별표/서식 등 헤딩만인 경우 스킵
             continue
 
-        jo = _clean(_sg(art, "조문번호") or _sg(art, "조번호") or _sg(art, "조문키"))
+        jo_raw   = _clean(_sg(art, "조문번호"))
         jo_title = _clean(_sg(art, "조문제목"))
-        jo_text  = _clean(_sg(art, "조문내용"))
-        if jo_title or jo_text:
+        jo_body  = _clean(_stringify(_sg(art, "조문내용")))
+
+        # 1) 조 단위
+        if jo_raw and (jo_title or jo_body):
             units.append({
                 "level": "조",
-                "jo": jo or None,
-                "hang": None,
-                "mok": None,
+                "jo": jo_raw, "hang": None, "mok": None,
                 "title": jo_title or None,
-                "text": jo_text or None,
-                "path": f"제{jo}조" if jo else "조문",
+                "text": jo_body or "",
+                "path": f"제{jo_raw}조",
             })
 
+        # 2) 항 단위
         for h in _as_list(_sg(art, "항")):
-            hang_no  = _clean(_sg(h, "항번호"))
-            hang_txt = _clean(_sg(h, "항내용") or _sg(h, "내용"))
-            if hang_no or hang_txt:
+            hang_no   = _clean(_sg(h, "항번호") or _sg(h, "항"))
+            hang_body = _clean(_stringify(_sg(h, "항내용") or h))
+            if not hang_no or not hang_body:
+                continue
+
+            h_path = f"제{jo_raw}조 > 제{hang_no}항" if jo_raw else f"제{hang_no}항"
+            units.append({
+                "level": "항",
+                "jo": jo_raw, "hang": hang_no, "mok": None,
+                "title": None,
+                "text": hang_body,
+                "path": h_path,
+            })
+
+            # 3) 목(또는 호) 단위
+            m_list = _as_list(_sg(h, "목") or _sg(h, "호"))
+            for m in m_list:
+                mok_no   = _clean(_sg(m, "목번호") or _sg(m, "호번호") or _sg(m, "목") or _sg(m, "호"))
+                mok_body = _clean(_stringify(_sg(m, "목내용") or _sg(m, "호내용") or m))
+                if not mok_no or not mok_body:
+                    continue
+
+                # 기존 데이터 스타일을 따라 "1.호" 형태로 맞춤
+                _seg = mok_no.strip()
+                seg = f"{_seg}호" if _seg.endswith(".") else f"{_seg}.호"
+
                 units.append({
-                    "level": "항",
-                    "jo": jo or None,
-                    "hang": hang_no or None,
-                    "mok": None,
+                    "level": "목",
+                    "jo": jo_raw, "hang": hang_no, "mok": mok_no,
                     "title": None,
-                    "text": hang_txt or None,
-                    "path": " > ".join([p for p in [f"제{jo}조" if jo else None,
-                                                    f"제{hang_no}항" if hang_no else "항"] if p]),
+                    "text": mok_body,
+                    "path": f"{h_path} > {seg}",
                 })
 
-            children = _as_list(_sg(h, "목")) or _as_list(_sg(h, "호"))
-            for ch in children:
-                num = _clean(_sg(ch, "호번호") or _sg(ch, "목번호") or _sg(ch, "번호"))
-                txt = _clean(_sg(ch, "호내용") or _sg(ch, "목내용") or _sg(ch, "내용"))
-                if num or txt:
-                    units.append({
-                        "level": "목",
-                        "jo": jo or None,
-                        "hang": hang_no or None,
-                        "mok": num or None,
-                        "title": None,
-                        "text": txt or None,
-                        "path": " > ".join([p for p in [f"제{jo}조" if jo else None,
-                                                        f"제{hang_no}항" if hang_no else None,
-                                                        (f"{num}호" if num else None)] if p]),
-                    })
+    return units
+
+def extract_buchik_units(law_json: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """
+    현행 본문 JSON의 '부칙' 블록을 간단히 유닛화.
+    level='부칙', path='부칙', title/text 채워서 반환.
+    """
+    units: List[Dict[str, Any]] = []
+    try:
+        law = law_json.get("법령") or law_json
+        buk = law.get("부칙")
+        if not isinstance(buk, dict):
+            return units
+
+        items = buk.get("부칙단위") or []
+        if isinstance(items, dict):
+            items = [items]
+
+        for it in items:
+            if not isinstance(it, dict):
+                continue
+            title = (it.get("부칙제목") or "부칙").strip()
+
+            contents: List[str] = []
+            content_blocks = it.get("부칙내용") or []
+            if isinstance(content_blocks, dict):
+                content_blocks = [content_blocks]
+            if not isinstance(content_blocks, list):
+                content_blocks = [content_blocks]
+
+            for blk in content_blocks:
+                if isinstance(blk, dict):
+                    iter_lines = list(blk.values())
+                elif isinstance(blk, list):
+                    iter_lines = blk
+                else:
+                    iter_lines = [blk]
+                for ln in iter_lines:
+                    s = str(ln).strip()
+                    if s:
+                        contents.append(s)
+
+            text = "\n".join(contents).strip()
+            if not text:
+                continue
+
+            units.append({
+                "level": "부칙",
+                "jo": None, "hang": None, "mok": None,
+                "title": title,
+                "text": text,
+                "path": "부칙",
+            })
+    except Exception:
+        return units
+    return units
+
+
+def fetch_annex_units(client: LawAPIClient, mst: str, law_title: Optional[str]) -> List[Dict[str, Any]]:
+    """
+    licbyl(별표/서식) 검색 → 해당 MST만 수집해 유닛화.
+    최소 버전: 제목/번호/링크만 채움 (본문 텍스트는 제목 복제)
+    """
+    units: List[Dict[str, Any]] = []
+
+    def _rows(resp: Dict[str, Any]) -> List[Dict[str, Any]]:
+        """응답 어디에 있든 licbyl을 리스트로 반환."""
+        if not isinstance(resp, dict):
+            return []
+        blk = resp.get("licBylSearch") or resp.get("LicBylSearch") or resp.get("licbylsearch")
+        rows = (blk.get("licbyl") if isinstance(blk, dict) else None) or resp.get("licbyl")
+        if rows:
+            return rows if isinstance(rows, list) else [rows]
+        out: List[Dict[str, Any]] = []
+        stack = [resp]
+        while stack:
+            cur = stack.pop()
+            if isinstance(cur, dict):
+                for k, v in cur.items():
+                    if k.lower() == "licbyl":
+                        if isinstance(v, list):
+                            out.extend(v)
+                        elif isinstance(v, dict):
+                            out.append(v)
+                    elif isinstance(v, (dict, list)):
+                        stack.append(v)
+            elif isinstance(cur, list):
+                stack.extend(cur)
+        return out
+    
+     # 1차: law_title(법령명) 기반 '해당법령검색(search=2)'
+    rows = []
+    if law_title:
+        try:
+            logger.info(f"[annex] licbyl search=2 by law_title={law_title!r}")
+            resp = client.search_attachments(query=str(law_title), search=2, display=100)
+            rows = _rows(resp)
+            logger.info(f"[annex] search=2 rows={len(rows)}")
+        except Exception:
+            rows = []
+
+    # 2차: law_title로 '별표/서식명(search=1)'
+    if not rows and law_title:
+        try:
+            logger.info(f"[annex] licbyl search=1 by law_title={law_title!r}")
+            resp2 = client.search_attachments(query=str(law_title), search=1, display=100)
+            rows = _rows(resp2)
+            logger.info(f"[annex] search=1 rows={len(rows)}")
+        except Exception:
+            rows = []
+
+    # 3차: law_title로 '본문검색(search=3)'
+    if not rows and law_title:
+        try:
+            logger.info(f"[annex] licbyl search=3 by law_title={law_title!r}")
+            resp3 = client.search_attachments(query=str(law_title), search=3, display=100)
+            rows = _rows(resp3)
+            logger.info(f"[annex] search=3 rows={len(rows)}")
+        except Exception:
+            rows = []
+
+    # (옵션) 마지막 폴백: mst 문자열로 search=2
+    if not rows:
+        try:
+            logger.info(f"[annex] licbyl search=2 by mst={mst}")
+            resp4 = client.search_attachments(query=str(mst), search=2, display=100)
+            rows = _rows(resp4)
+            logger.info(f"[annex] search=2(mst) rows={len(rows)}")
+        except Exception:
+            rows = []
+
+    if not rows:
+        return units
+
+    LAW_BASE = os.environ.get("LAW_BASE", "http://www.law.go.kr")
+
+    def _norm_annex_no(s: Optional[str]) -> Optional[str]:
+        if not s:
+            return None
+        s = str(s).strip()
+        # "4-2" / "4/2" / "4 의 2" / "4의2" 등 → "4의2"
+        m = re.match(r'^(\d+)\s*(?:[-_/]|의)\s*(\d+)$', s)
+        if m:
+            return f"{m.group(1)}의{m.group(2)}"
+        # 단일 숫자는 그대로
+        m2 = re.match(r'^\d+$', s)
+        if m2:
+            return s
+        return s
+
+    def _get_any(d: Dict[str, Any], keys: List[str]) -> Optional[str]:
+        for k in keys:
+            v = _sg(d, k)
+            if v:
+                return v
+        return None
+
+    def _abs(u: Optional[str]) -> Optional[str]:
+        if not u:
+            return None
+        return u if str(u).startswith("http") else (LAW_BASE + str(u))
+
+    for r in rows:
+        # 관련 법령 일련번호가 있으면 mst로 필터, 없으면 통과
+        rel = _clean(_get_any(r, ["관련법령일련번호", "법령일련번호", "MST"]))
+        if rel and rel != str(mst):
+            continue
+
+        name = _clean(_get_any(r, ["별표명", "서식명", "항목명", "명칭", "제목"]))
+        annex_no = _norm_annex_no(_get_any(r, ["별표번호", "번호"]))
+
+        html = _get_any(r, ["별표서식파일링크","별표본문링크","서식파일링크","파일링크","본문링크"])
+        pdf  = _get_any(r, ["별표서식PDF파일링크","PDF파일링크","서식PDF링크"])
+        det  = _get_any(r, ["별표법령상세링크","상세링크","법령상세링크"])
+        links = {}
+        if html: links["html"]   = _abs(html)
+        if pdf:  links["pdf"]    = _abs(pdf)
+        if det:  links["detail"] = _abs(det)
+        # level 판정: '서식명' 키가 있으면 서식, 아니면 별표
+        is_form = _get_any(r, ["서식명"]) is not None
+        level = "서식" if is_form else "별표"
+        path_label = f"{level} {annex_no}" if annex_no else level
+
+        units.append({
+            "level": level,
+            "jo": None, "hang": None, "mok": None,
+            "title": name or "별표/서식",
+            "text": name or "별표/서식",                         # 최소 버전: 본문 = 제목
+            "path": path_label,   # 표시 경로
+            "annex_no": annex_no,
+            "links": links or None,
+        })
+
+         # --- annex 중복 정리: 같은 annex_no는 '최고본'만 유지 ---
+    def _score(u: Dict[str, Any]) -> int:
+        L = u.get("links") or {}
+        s = 0
+        if L.get("html"):   s += 4
+        if L.get("pdf"):    s += 2
+        if L.get("detail"): s += 1
+        title = (u.get("title") or "").strip()
+        if title: s += min(50, len(title))
+        # 별표를 서식보다 우선시하려면 가중치 (선택)
+        if u.get("level") == "별표": s += 1
+        return s
+
+    by_no: Dict[str, Dict[str, Any]] = {}
+    for u in units:
+        key = str(u.get("annex_no") or (u.get("title") or ""))
+        if key not in by_no or _score(u) > _score(by_no[key]):
+            by_no[key] = u
+    units = list(by_no.values())
+
     return units
 
 # ----------------------- 수집(메타 보존+페이징) -----------
@@ -423,11 +710,28 @@ def build_index_for_mst(mst: str, out_dir: str = "faiss_indexes", client: Option
 
     # 2) 구조화 추출
     units = extract_units(law_json)
-    # ✅ 후처리: 항/호 정규화, display_path_norm, (메타 주입/중복 보수적 제거)
-    units = postprocess_units(units, law_meta=law_json.get("법령"))
 
-    if not units:
-        raise RuntimeError(f"MST {mst}: 추출된 조/항/목 단위가 없습니다.")
+    # 2.1) 부칙 합류
+    buchik = extract_buchik_units(law_json)
+    if buchik:
+        units.extend(buchik)
+        logger.info(f"MST {mst}: 부칙 units += {len(buchik)}")
+
+    # 2.2) 별표/서식 합류
+    law_title = _get_law_korean_name(law_json)
+    
+    # 폴백: base가 "이름_MST" 형태면 앞부분을 법령명으로 사용
+    if not law_title and isinstance(base, str):
+        if base.endswith(f"_{mst}"):
+            law_title = base[:-(len(mst) + 1)] or None
+
+    annexes = fetch_annex_units(client, mst, law_title)
+    if annexes:
+        units.extend(annexes)
+        logger.info(f"MST {mst}: 별표/서식 units += {len(annexes)}")
+
+    # 2.3) ✅ 후처리(한 번에)
+    units = postprocess_units(units, law_meta=law_json.get("법령"))
 
     # 3) units 저장
     with AtomicWriter(units_path) as aw:
@@ -489,12 +793,20 @@ def build_index_for_mst(mst: str, out_dir: str = "faiss_indexes", client: Option
 
     dt = time.monotonic() - t0
     logger.info("MST %s build finished in %.2fs (units=%d)", mst, dt, len(units))
-    return {"mst": mst, "units": len(units), "duration_sec": dt, "out_dir": out_dir, "base": base}
-
+        # 직전 본문에서 law_title을 이미 계산함: _get_law_korean_name(law_json)
+    law_title = _get_law_korean_name(law_json)
+    return {
+        "mst": mst,
+        "units": len(units),
+        "duration_sec": dt,
+        "out_dir": out_dir,
+        "base": base,
+        "law_title": law_title
+    }
 def build_indexes(msts: List[str], out_dir: str = "faiss_indexes") -> List[Dict[str, Any]]:
     results = []
     oc = os.environ.get("LAW_API_OC")
-    shared_client = LawAPIClient(oc) if oc else LawAPIClient()
+    shared_client = LawAPIClient()
     for mst in msts:
         try:
             results.append(build_index_for_mst(mst, out_dir, client=shared_client))
@@ -546,12 +858,20 @@ from normalizers import circled_to_int  # 필요 시 사용 (이미 추가한 �
 
 def _load_units_and_idmap(out_dir: str, base: str) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
     """base는 JSON 파일 베이스명(예: '안전보건규칙_272927' 또는 '272927')"""
-    units_path = os.path.join(out_dir, f"{base}_units.json") if os.path.exists(os.path.join(out_dir, f"{base}_units.json")) \
-        else os.path.join(out_dir, "units.json")  # BUNDLE_PER_LAW 대비
-    idmap_path = os.path.join(out_dir, f"{base}_faiss_id_map.json") if os.path.exists(os.path.join(out_dir, f"{base}_faiss_id_map.json")) \
-        else os.path.join(out_dir, "faiss_id_map.json")
+    cand_units = [
+        os.path.join(out_dir, f"{base}_units.json"),
+        os.path.join(out_dir, base, "units.json"),
+        os.path.join(out_dir, "units.json"),
+    ]
+    cand_idmap = [
+        os.path.join(out_dir, f"{base}_faiss_id_map.json"),
+        os.path.join(out_dir, base, "faiss_id_map.json"),
+        os.path.join(out_dir, "faiss_id_map.json"),
+    ]
+    units_path = next((p for p in cand_units if os.path.exists(p)), cand_units[0])
+    idmap_path = next((p for p in cand_idmap if os.path.exists(p)), cand_idmap[0])
     with open(units_path, "r", encoding="utf-8") as f:
-        units = json.load(f)
+        units = json.load(f)    
     with open(idmap_path, "r", encoding="utf-8") as f:
         idmap = json.load(f)
     return units, idmap
@@ -562,7 +882,7 @@ def _collect_meta_matched_ids(units: List[Dict[str,Any]], jo: Optional[str], han
         return set()
     matched = []
     for idx, u in enumerate(units):
-        if jo and u.get("jo") != jo:
+        if jo and str(u.get("jo_norm") or (u.get("jo") or "")).strip() != str(jo):
             continue
         if hang_norm is not None and u.get("hang_norm") != hang_norm:
             continue
@@ -582,6 +902,8 @@ class SimpleSearcher:
         self.out_dir = out_dir
         self.mst = str(mst)
         self.base = base or self.mst
+        # STRICT_META=1 → 조/항/호 중 2개 이상 일치시에만 '메타 승격'
+        self.strict_meta = str(os.environ.get("STRICT_META", "0")).lower() in ("1","true","yes")
 
         if faiss is None:
             raise RuntimeError("faiss 모듈이 필요합니다.")
@@ -599,43 +921,163 @@ class SimpleSearcher:
         arr = _sanitize_vec(v)[None, :]  # ✅ 질의 벡터도 살균
         return arr
 
-    def search(self, query: str, top_k: int = 10) -> List[Dict[str, Any]]:
-        import numpy as np
+    def _meta_match_count(self, u: Dict[str, Any], jo: Optional[str],
+                          hang_norm: Optional[int], mok_norm: Optional[int]) -> int:
+        cnt = 0
+        if jo:
+            jo_u = u.get("jo_norm") or (u.get("jo") or "").strip()
+            if jo_u == jo:
+                cnt += 1
+        if hang_norm is not None and u.get("hang_norm") == hang_norm:
+            cnt += 1
+        if mok_norm is not None and u.get("mok_norm") == mok_norm:
+            cnt += 1
+        return cnt
+
+    def _is_active_as_of(self, u, as_of):
+        if not as_of:
+            return True
+        def _parse(d):
+            if not d: return None
+            s=str(d).strip()[:10]  # 'YYYY-MM-DD...' 형태일 때 앞 10자
+            try:
+                import datetime as dt
+                y,m,d = s.split('-')
+                return dt.date(int(y),int(m),int(d))
+            except Exception:
+                return None
+        cutoff = _parse(as_of)
+        if not cutoff:  # 파싱 실패 시 필터 비적용
+            return True
+
+        eff = _parse(u.get('effective_date') or u.get('시행일자'))
+        amd = _parse(u.get('amended_on') or u.get('개정일자'))
+        # 우선순위: 시행일자가 있으면 그 기준, 없으면 개정일자
+        keydate = eff or amd
+        if not keydate:
+            return True
+        return keydate <= cutoff
+    
+    def search(self, query: str, top_k: int = 10, as_of: Optional[str] = None) -> List[Dict[str, Any]]:
         # 1) FAISS 1차 검색(여유 버퍼 포함)
         qv = self._embed(query)
         k = max(top_k * 20, top_k)
-        D, I = self.index.search(qv, k)  # D: 거리(작을수록 좋음) 가정
+        D, I = self.index.search(qv, k)  # D: 거리(작을수록 좋음)
         cand = []
         for dist, idx in zip(D[0].tolist(), I[0].tolist()):
             if idx < 0:
                 continue
             u = self.units[idx]
+            if not self._is_active_as_of(u, as_of):
+                continue
             cand.append({"faiss_id": idx, "distance": float(dist), "unit": u})
 
-        # 2) 질의에서 조/항/호 파싱 → 매칭 ID 집합
+        # 2) 질의에서 조/항/호 파싱 → 매칭 계산
         jo, hang_norm, mok_norm = parse_meta(query)
-        matched_ids = _collect_meta_matched_ids(self.units, jo, hang_norm, mok_norm)
+        meta_counts: Dict[int, int] = {}
+        for idx, u in enumerate(self.units):
+            if not self._is_active_as_of(u, as_of):
+                continue
+            c = self._meta_match_count(u, jo, hang_norm, mok_norm)
+            if c:
+                meta_counts[idx] = c
 
-        # 3) 메타 우선 재정렬 (우선순위 → 원래 거리)
+        # STRICT_META=1 → 2개 이상 일치시에만 메타 승격
+        if self.strict_meta:
+            require_jo = str(os.environ.get("STRICT_META_REQUIRE_JO", "0")).lower() in ("1","true","yes")
+            if require_jo and jo:
+                meta_promote = {
+                    i for i, c in meta_counts.items()
+                    if c >= 2 and (str(self.units[i].get("jo_norm") or (self.units[i].get("jo") or "")).strip() == str(jo))
+                }
+            else:
+                meta_promote = {i for i, c in meta_counts.items() if c >= 2}        
+        else:
+            meta_promote = _collect_meta_matched_ids(self.units, jo, hang_norm, mok_norm)
+
+        # FAISS 후보에 없는 메타 승격 유닛 주입
+        present = {it["faiss_id"] for it in cand}
+        for idx in meta_promote:
+            if idx not in present:
+                u = self.units[idx]
+                cand.append({"faiss_id": idx, "distance": 1e9, "unit": u, "injected": True})
+
+        # 3) annex_refs가 있으면 같은 MST의 '별표/서식 annex_no'를 cand에 동반 주입
+        #    (보강) FAISS 상위 + 메타 주입(injected=True) + (필요시) 같은 조(jo_norm) 유닛의 annex_refs를 함께 수집
+        # 씨드: FAISS 상위
+        seed = cand[: max(10, top_k * 2)]
+        # 씨드 확장: 메타로 주입된 것들도 포함
+        seed += [it for it in cand if it.get("injected") and it not in seed]
+
+        annex_targets: set[str] = set()
+        # 3-1) 씨드에서 annex_refs 수집
+        for it in seed:
+            for r in (it["unit"].get("annex_refs") or []):
+                annex_targets.add(str(r))
+
+        # 3-2) 씨드에 annex_refs가 전혀 없고, 질의에서 조(jo)가 파싱되었다면 → 같은 조(jo_norm) 유닛들의 annex_refs 수집
+        if not annex_targets:
+            jo, hang_norm, mok_norm = parse_meta(query)  # 이미 상단에서 구했다면 재사용해도 됨
+            if jo:
+                for u1 in self.units:
+                    jo_u = str(u1.get("jo_norm") or (u1.get("jo") or "")).strip()
+                    if jo_u == jo or (u1.get("jo") and u1.get("jo").strip() == f"제{jo}조"):
+                        for r in (u1.get("annex_refs") or []):
+                            annex_targets.add(str(r))
+
+        # 3-3) annex_targets 과 일치하는 별표/서식 유닛을 동반 주입
+        if annex_targets:
+            cand_ids = {it["faiss_id"] for it in cand}
+            for idx, u in enumerate(self.units):
+                if idx in cand_ids:
+                    continue
+                if not self._is_active_as_of(u, as_of):
+                    continue
+                if (u.get("level") in ("별표", "서식")) and (str(u.get("annex_no")) in annex_targets):
+                    cand.append({"faiss_id": idx, "distance": 1e9, "unit": u, "annex_injected": True})
+        
+        # 4) 최종 정렬: 메타 승격 > annex 보너스 > FAISS 거리
         def _prio(item):
             fid = item["faiss_id"]
             pr = 0
-            if fid in matched_ids:
-                # 조/항/호 모두 매칭 시 가중치 ↑
-                pr = 2
-                u = item["unit"]
-                if (hang_norm is None or u.get("hang_norm") == hang_norm) and (mok_norm is None or u.get("mok_norm") == mok_norm):
-                    pr = 3
+            if fid in meta_promote:
+                pr += 3
+            elif (not self.strict_meta) and (meta_counts.get(fid, 0) >= 1):
+                pr += 1
+            u = item["unit"]
+            # annex 보너스는 메타만큼 강하게 올려준다
+            if (u.get("level") in ("별표", "서식")) and (str(u.get("annex_no")) in annex_targets):
+                pr += 3
+            if item.get("annex_injected"):
+                pr += 1
             return (-pr, item["distance"])
 
         cand.sort(key=_prio)
-        # 4) 상위 top_k 반환(필요 정보만)
-        out = []
-        for it in cand[:top_k]:
+
+        # 4-1) 상위 top_k에 annex가 하나도 없으면 1개는 보장 삽입
+        selected = cand[:top_k]
+        if annex_targets:
+            has_annex = any(
+                (it["unit"].get("level") in ("별표", "서식")) and
+                (str(it["unit"].get("annex_no")) in annex_targets)
+                for it in selected
+            )
+            if not has_annex:
+                for it in cand[top_k:]:
+                    u = it["unit"]
+                    if (u.get("level") in ("별표", "서식")) and (str(u.get("annex_no")) in annex_targets):
+                        selected[-1] = it
+                        break
+
+         # 5) 상위 top_k 반환(필요 정보만)
+        out: List[Dict[str, Any]] = []
+        for it in selected:        
             u = it["unit"]
             out.append({
                 "faiss_id": it["faiss_id"],
                 "distance": it["distance"],
+                "level": u.get("level"),
+                "annex_no": u.get("annex_no"),
                 "jo": u.get("jo"),
                 "hang": u.get("hang"),
                 "hang_norm": u.get("hang_norm"),
