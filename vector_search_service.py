@@ -7,6 +7,8 @@ import logging
 import tempfile
 import unicodedata
 from typing import Any, Dict, Iterable, List, Optional, Tuple
+from normalizers import postprocess_units
+
 
 try:
     import faiss  # type: ignore
@@ -55,12 +57,35 @@ class AtomicWriter:
                 except Exception:
                     pass
 
-# ----------------------- 임베딩 (플레이스홀더) -------------
-import hashlib, struct
+# ----------------------- 임베딩 (안전한 플레이스홀더) -------------
+import hashlib
+import numpy as np
+from typing import List
+
 def embed_text(text: str) -> List[float]:
-    h = hashlib.sha256((text or "").encode("utf-8")).digest()
-    # 32 bytes -> 8 floats (고정 차원)
-    return [struct.unpack('!f', h[i:i+4])[0] for i in range(0, 32, 4)]
+    """해시 → [−1, 1] 범위의 8차원 벡터로 매핑하고 L2 정규화"""
+    h = hashlib.sha256((text or "").encode("utf-8")).digest()  # 32 bytes
+    # 32바이트 → 8개 uint32
+    vals = [int.from_bytes(h[i:i+4], "big", signed=False) for i in range(0, 32, 4)]
+    a = np.array(vals, dtype="float32") / 4294967295.0  # [0,1]
+    a = 2.0 * a - 1.0                                   # [-1,1]
+    # L2 normalize (영벡터 보호)
+    n = float(np.linalg.norm(a))
+    if n == 0.0:
+        a[0] = 1e-6
+        n = 1.0
+    a = a / n
+    return a.astype("float32").tolist()
+def _sanitize_vec(v):
+    import numpy as np
+    a = np.asarray(v, dtype="float32")
+    # NaN/Inf -> 0.0
+    if not np.all(np.isfinite(a)):
+        a = np.nan_to_num(a, nan=0.0, posinf=0.0, neginf=0.0)
+    # 영벡터 방지(완전 0이면 첫 요소에 아주 작은 값)
+    if a.size and float(np.linalg.norm(a)) == 0.0:
+        a[0] = 1e-6
+    return a
 
 # ----------------------- 헬퍼 -----------------------------
 def _as_list(x):
@@ -387,15 +412,20 @@ def build_index_for_mst(mst: str, out_dir: str = "faiss_indexes", client: Option
         units_path   = os.path.join(law_dir, "units.json")
         answers_path = os.path.join(law_dir, "answers.json")
         idmap_path   = os.path.join(law_dir, "faiss_id_map.json")
-        index_path   = os.path.join(law_dir, "faiss_index.bin")
+        # ✅ 인덱스 파일만 ASCII(MST)로 out_dir에 저장
+        index_path   = os.path.join(out_dir, f"{mst}_faiss_index.bin")
     else:
         units_path   = os.path.join(out_dir, f"{base}_units.json")
         answers_path = os.path.join(out_dir, f"{base}_answers.json")
         idmap_path   = os.path.join(out_dir, f"{base}_faiss_id_map.json")
-        index_path   = os.path.join(out_dir, f"{base}_faiss_index.bin")
+        # ✅ 인덱스 파일만 ASCII(MST)로 저장
+        index_path   = os.path.join(out_dir, f"{mst}_faiss_index.bin")
 
     # 2) 구조화 추출
     units = extract_units(law_json)
+    # ✅ 후처리: 항/호 정규화, display_path_norm, (메타 주입/중복 보수적 제거)
+    units = postprocess_units(units, law_meta=law_json.get("법령"))
+
     if not units:
         raise RuntimeError(f"MST {mst}: 추출된 조/항/목 단위가 없습니다.")
 
@@ -446,14 +476,16 @@ def build_index_for_mst(mst: str, out_dir: str = "faiss_indexes", client: Option
     # 7) FAISS 인덱스 저장 (미설치 시 placeholder)
     if faiss is not None and texts_to_embed:
         import numpy as np
-        xb = np.array([embed_text(t) for t in texts_to_embed], dtype='float32')
+        # ✅ 각 벡터를 살균 후 스택
+        xb = np.vstack([_sanitize_vec(embed_text(t)) for t in texts_to_embed]).astype('float32')
         d = xb.shape[1]
-        index = faiss.IndexFlatL2(d)
+        index = faiss.IndexFlatL2(d)  # ✅ 안전모드: FLAT L2
         index.add(xb)
         faiss.write_index(index, index_path)
     else:
         with AtomicWriter(index_path) as aw:
             aw.write(b"FAISS_NOT_AVAILABLE")
+
 
     dt = time.monotonic() - t0
     logger.info("MST %s build finished in %.2fs (units=%d)", mst, dt, len(units))
@@ -500,3 +532,118 @@ if __name__ == "__main__":
 
     res = build_indexes(msts, args.out_dir)
     print(json.dumps(res, ensure_ascii=False, indent=2))
+
+# --- Search helpers: meta-aware rerank (조/항/호) ---
+from typing import List, Dict, Any, Optional, Tuple
+import os, json
+try:
+    import faiss  # type: ignore
+except Exception:
+    faiss = None  # noqa
+
+from query_meta import parse_meta
+from normalizers import circled_to_int  # 필요 시 사용 (이미 추가한 파일에 있음)
+
+def _load_units_and_idmap(out_dir: str, base: str) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+    """base는 JSON 파일 베이스명(예: '안전보건규칙_272927' 또는 '272927')"""
+    units_path = os.path.join(out_dir, f"{base}_units.json") if os.path.exists(os.path.join(out_dir, f"{base}_units.json")) \
+        else os.path.join(out_dir, "units.json")  # BUNDLE_PER_LAW 대비
+    idmap_path = os.path.join(out_dir, f"{base}_faiss_id_map.json") if os.path.exists(os.path.join(out_dir, f"{base}_faiss_id_map.json")) \
+        else os.path.join(out_dir, "faiss_id_map.json")
+    with open(units_path, "r", encoding="utf-8") as f:
+        units = json.load(f)
+    with open(idmap_path, "r", encoding="utf-8") as f:
+        idmap = json.load(f)
+    return units, idmap
+
+def _collect_meta_matched_ids(units: List[Dict[str,Any]], jo: Optional[str], hang_norm: Optional[int], mok_norm: Optional[int]) -> set:
+    """units.json(정규화 필드 포함)에서 조/항/호 일치하는 인덱스(=faiss_id)를 수집"""
+    if not jo and not hang_norm and not mok_norm:
+        return set()
+    matched = []
+    for idx, u in enumerate(units):
+        if jo and u.get("jo") != jo:
+            continue
+        if hang_norm is not None and u.get("hang_norm") != hang_norm:
+            continue
+        if mok_norm is not None and u.get("mok_norm") != mok_norm:
+            continue
+        matched.append(idx)  # id_map의 faiss_id는 units와 동일 인덱스라고 가정
+    return set(matched)
+
+class SimpleSearcher:
+    """FAISS + 메타 재정렬. 인덱스는 MST명으로 로드(ASCII 경로)."""
+    def __init__(self, out_dir: str, mst: str, base: Optional[str] = None):
+        """
+        out_dir: 인덱스/JSON 산출 폴더
+        mst: '272927' 같은 문자열
+        base: JSON 베이스명(없으면 mst와 동일한 베이스로 시도)
+        """
+        self.out_dir = out_dir
+        self.mst = str(mst)
+        self.base = base or self.mst
+
+        if faiss is None:
+            raise RuntimeError("faiss 모듈이 필요합니다.")
+
+        index_path = os.path.join(out_dir, f"{self.mst}_faiss_index.bin")
+        if not os.path.exists(index_path):
+            raise FileNotFoundError(index_path)
+        self.index = faiss.read_index(index_path)
+
+        self.units, self.idmap = _load_units_and_idmap(out_dir, self.base)
+
+    def _embed(self, text: str):
+        from vector_search_service import embed_text as _embed_text, _sanitize_vec  # 순환 import 회피
+        v = _embed_text(text)
+        arr = _sanitize_vec(v)[None, :]  # ✅ 질의 벡터도 살균
+        return arr
+
+    def search(self, query: str, top_k: int = 10) -> List[Dict[str, Any]]:
+        import numpy as np
+        # 1) FAISS 1차 검색(여유 버퍼 포함)
+        qv = self._embed(query)
+        k = max(top_k * 20, top_k)
+        D, I = self.index.search(qv, k)  # D: 거리(작을수록 좋음) 가정
+        cand = []
+        for dist, idx in zip(D[0].tolist(), I[0].tolist()):
+            if idx < 0:
+                continue
+            u = self.units[idx]
+            cand.append({"faiss_id": idx, "distance": float(dist), "unit": u})
+
+        # 2) 질의에서 조/항/호 파싱 → 매칭 ID 집합
+        jo, hang_norm, mok_norm = parse_meta(query)
+        matched_ids = _collect_meta_matched_ids(self.units, jo, hang_norm, mok_norm)
+
+        # 3) 메타 우선 재정렬 (우선순위 → 원래 거리)
+        def _prio(item):
+            fid = item["faiss_id"]
+            pr = 0
+            if fid in matched_ids:
+                # 조/항/호 모두 매칭 시 가중치 ↑
+                pr = 2
+                u = item["unit"]
+                if (hang_norm is None or u.get("hang_norm") == hang_norm) and (mok_norm is None or u.get("mok_norm") == mok_norm):
+                    pr = 3
+            return (-pr, item["distance"])
+
+        cand.sort(key=_prio)
+        # 4) 상위 top_k 반환(필요 정보만)
+        out = []
+        for it in cand[:top_k]:
+            u = it["unit"]
+            out.append({
+                "faiss_id": it["faiss_id"],
+                "distance": it["distance"],
+                "jo": u.get("jo"),
+                "hang": u.get("hang"),
+                "hang_norm": u.get("hang_norm"),
+                "mok": u.get("mok"),
+                "mok_norm": u.get("mok_norm"),
+                "title": u.get("title"),
+                "text": u.get("text"),
+                "path": u.get("path"),
+                "display_path_norm": u.get("display_path_norm"),
+            })
+        return out
