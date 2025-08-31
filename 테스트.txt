@@ -1,0 +1,322 @@
+PS C:\Users\kwater\Desktop\safety-ai> python build_db.py
+>>
+✅ 환경변수 LAW_API_OC = shg30335
+[2025-08-26 10:25:04,166] INFO GET /DRF/lawService.do 1235ms 200 ct=application/json;charset=UTF-8 url=http://www.law.go.kr/DRF/lawService.do?OC=shg30335&target=law&type=JSON&MST=272927
+[2025-08-26 10:25:04,537] INFO MST 272927: 부칙 units += 28
+[2025-08-26 10:25:04,647] INFO [annex] licbyl search=2 by law_title='산업안전보
+건기준에 관한 규칙'
+[2025-08-26 10:25:04,725] INFO GET /DRF/lawSearch.do 78ms 200 ct=application/json;charset=UTF-8 url=http://www.law.go.kr/DRF/lawSearch.do?OC=shg30335&target=licbyl&type=JSON&query=%EC%82%B0%EC%97%85%EC%95%88%EC%A0%84%EB%B3%B4%EA%B1%B4%EA%B8%B0%EC%A4%80%EC%97%90+%EA%B4%80%ED%95%9C+%EA%B7%9C%EC%B9%99&page=1&display=100&sort=lasc&search=2
+[2025-08-26 10:25:04,726] INFO [annex] search=2 rows=23
+[2025-08-26 10:25:05,164] INFO [annex] filled text for annex_no=000500 source=pdf
+[2025-08-26 10:25:08,970] INFO [annex] filled text for annex_no=000200 source=pdf
+[2025-08-26 10:25:09,439] INFO [annex] filled text for annex_no=001300 source=pdf
+[2025-08-26 10:25:13,150] INFO [annex] filled text for annex_no=001200 source=pdf
+[2025-08-26 10:25:13,567] INFO [annex] filled text for annex_no=001100 source=pdf
+[2025-08-26 10:25:17,746] INFO [annex] filled text for annex_no=000400 source=pdf
+[2025-08-26 10:25:20,687] INFO [annex] filled text for annex_no=001800 source=pdf
+[2025-08-26 10:25:21,239] INFO [annex] filled text for annex_no=001600 source=pdf
+[2025-08-26 10:25:21,684] INFO [annex] filled text for annex_no=001700 source=pdf
+[2025-08-26 10:25:23,307] INFO [annex] filled text for annex_no=000100 source=pdf
+[2025-08-26 10:25:23,629] INFO [annex] filled text for annex_no=001000 source=pdf
+[2025-08-26 10:25:24,120] INFO [annex] filled text for annex_no=000300 source=pdf
+[2025-08-26 10:25:25,627] INFO [annex] filled text for annex_no=000800 source=pdf
+[2025-08-26 10:25:28,180] INFO [annex] filled text for annex_no=000900 source=pdf
+[2025-08-26 10:25:30,265] INFO [annex] filled text for annex_no=000600 source=pdf
+[2025-08-26 10:25:30,747] INFO [annex] filled text for annex_no=001302 source=pdf
+[2025-08-26 10:25:32,969] INFO [annex] filled text for annex_no=001400 source=pdf
+[2025-08-26 10:25:34,056] INFO [annex] filled text for annex_no=001500 source=pdf
+[2025-08-26 10:25:34,495] INFO [annex] filled text for annex_no=000700 source=pdf
+[2025-08-26 10:25:34,496] INFO [annex] filled 19/19 units (law_title='산업안전
+보건기준에 관한 규칙')
+[2025-08-26 10:25:34,496] INFO MST 272927: 별표/서식 units += 19
+[2025-08-26 10:25:34,711] INFO MST 272927 build finished in 31.78s (units=2002)[2025-08-26 10:25:35,971] INFO GET /DRF/lawService.do 1250ms 200 ct=application/json;charset=UTF-8 url=http://www.law.go.kr/DRF/lawService.do?OC=shg30335&target=law&type=JSON&MST=271485
+[2025-08-26 10:25:36,126] INFO MST 271485: 부칙 units += 11
+[2025-08-26 10:25:36,133] INFO [annex] licbyl search=2 by law_title='산업안전보
+건법 시행규칙'
+[2025-08-26 10:25:36,211] INFO GET /DRF/lawSearch.do 79ms 200 ct=application/json;charset=UTF-8 url=http://www.law.go.kr/DRF/lawSearch.do?OC=shg30335&target=licbyl&type=JSON&query=%EC%82%B0%EC%97%85%EC%95%88%EC%A0%84%EB%B3%B4%EA%B1%B4%EB%B2%95+%EC%8B%9C%ED%96%89%EA%B7%9C%EC%B9%99&page=1&display=100&sort=lasc&search=2
+[2025-08-26 10:25:36,213] INFO [annex] search=2 rows=100
+[2025-08-26 10:25:36,641] INFO [annex] filled text for annex_no=002700 source=pdf
+[2025-08-26 10:25:37,313] INFO [annex] filled text for annex_no=000802 source=pdf
+[2025-08-26 10:25:37,730] INFO [annex] filled text for annex_no=000602 source=pdf
+[2025-08-26 10:25:38,253] INFO [annex] filled text for annex_no=004200 source=pdf
+[2025-08-26 10:25:38,736] INFO [annex] filled text for annex_no=007200 source=pdf
+[2025-08-26 10:25:39,496] INFO [annex] filled text for annex_no=002500 source=pdf
+[2025-08-26 10:25:41,015] INFO [annex] filled text for annex_no=008500 source=pdf
+[2025-08-26 10:25:41,704] INFO [annex] filled text for annex_no=005500 source=pdf
+[2025-08-26 10:25:43,381] INFO [annex] filled text for annex_no=008800 source=pdf
+[2025-08-26 10:25:43,768] INFO [annex] filled text for annex_no=003800 source=pdf
+[2025-08-26 10:25:45,126] INFO [annex] filled text for annex_no=003700 source=pdf
+[2025-08-26 10:25:45,622] INFO [annex] filled text for annex_no=003600 source=pdf
+[2025-08-26 10:25:46,181] INFO [annex] filled text for annex_no=001700 source=pdf
+[2025-08-26 10:25:46,562] INFO [annex] filled text for annex_no=001400 source=pdf
+[2025-08-26 10:25:48,281] INFO [annex] filled text for annex_no=001300 source=pdf
+[2025-08-26 10:25:49,132] INFO [annex] filled text for annex_no=000100 source=pdf
+[2025-08-26 10:25:49,590] INFO [annex] filled text for annex_no=010100 source=pdf
+[2025-08-26 10:25:50,010] INFO [annex] filled text for annex_no=003500 source=pdf
+[2025-08-26 10:25:50,745] INFO [annex] filled text for annex_no=010000 source=pdf
+[2025-08-26 10:25:51,305] INFO [annex] filled text for annex_no=000400 source=pdf
+[2025-08-26 10:25:51,691] INFO [annex] filled text for annex_no=006900 source=pdf
+[2025-08-26 10:25:52,228] INFO [annex] filled text for annex_no=006800 source=pdf
+[2025-08-26 10:25:54,023] INFO [annex] filled text for annex_no=008700 source=pdf
+[2025-08-26 10:25:54,063] INFO [annex] filled text for annex_no=001100 source=pdf
+[2025-08-26 10:25:54,674] INFO [annex] filled text for annex_no=000900 source=pdf
+[2025-08-26 10:25:55,046] INFO [annex] filled text for annex_no=003900 source=pdf
+[2025-08-26 10:25:55,539] INFO [annex] filled text for annex_no=010500 source=pdf
+[2025-08-26 10:25:56,006] INFO [annex] filled text for annex_no=010400 source=pdf
+[2025-08-26 10:25:56,477] INFO [annex] filled text for annex_no=005600 source=pdf
+[2025-08-26 10:25:57,985] INFO [annex] filled text for annex_no=006600 source=pdf
+[2025-08-26 10:25:58,450] INFO [annex] filled text for annex_no=006500 source=pdf
+[2025-08-26 10:25:58,917] INFO [annex] filled text for annex_no=006700 source=pdf
+[2025-08-26 10:25:59,352] INFO [annex] filled text for annex_no=006400 source=pdf
+[2025-08-26 10:26:00,113] INFO [annex] filled text for annex_no=006300 source=pdf
+[2025-08-26 10:26:00,590] INFO [annex] filled text for annex_no=000800 source=pdf
+[2025-08-26 10:26:01,006] INFO [annex] filled text for annex_no=009700 source=pdf
+[2025-08-26 10:26:02,064] INFO [annex] filled text for annex_no=009900 source=pdf
+[2025-08-26 10:26:03,528] INFO [annex] filled text for annex_no=009800 source=pdf
+[2025-08-26 10:26:04,049] INFO [annex] filled text for annex_no=008600 source=pdf
+[2025-08-26 10:26:04,507] INFO [annex] filled text for annex_no=010200 source=pdf
+[2025-08-26 10:26:08,123] INFO [annex] filled text for annex_no=003000 source=pdf
+[2025-08-26 10:26:08,552] INFO [annex] filled text for annex_no=008000 source=pdf
+[2025-08-26 10:26:09,347] INFO [annex] filled text for annex_no=008100 source=pdf
+[2025-08-26 10:26:09,937] INFO [annex] filled text for annex_no=007400 source=pdf
+[2025-08-26 10:26:10,930] INFO [annex] filled text for annex_no=007600 source=pdf
+[2025-08-26 10:26:11,381] INFO [annex] filled text for annex_no=007500 source=pdf
+[2025-08-26 10:26:11,793] INFO [annex] filled text for annex_no=007800 source=pdf
+[2025-08-26 10:26:12,406] INFO [annex] filled text for annex_no=007700 source=pdf
+[2025-08-26 10:26:13,013] INFO [annex] filled text for annex_no=007900 source=pdf
+[2025-08-26 10:26:14,383] INFO [annex] filled text for annex_no=006000 source=pdf
+[2025-08-26 10:26:15,221] INFO [annex] filled text for annex_no=005700 source=pdf
+[2025-08-26 10:26:16,379] INFO [annex] filled text for annex_no=005800 source=pdf
+[2025-08-26 10:26:16,859] INFO [annex] filled text for annex_no=002000 source=pdf
+[2025-08-26 10:26:17,903] INFO [annex] filled text for annex_no=005900 source=pdf
+[2025-08-26 10:26:18,336] INFO [annex] filled text for annex_no=004500 source=pdf
+[2025-08-26 10:26:18,819] INFO [annex] filled text for annex_no=001200 source=pdf
+[2025-08-26 10:26:20,723] INFO [annex] filled text for annex_no=000500 source=pdf
+[2025-08-26 10:26:21,857] INFO [annex] filled text for annex_no=005100 source=pdf
+[2025-08-26 10:26:23,275] INFO [annex] filled text for annex_no=005000 source=pdf
+[2025-08-26 10:26:23,834] INFO [annex] filled text for annex_no=001600 source=pdf
+[2025-08-26 10:26:24,186] INFO [annex] filled text for annex_no=000200 source=pdf
+[2025-08-26 10:26:24,717] INFO [annex] filled text for annex_no=000300 source=pdf
+[2025-08-26 10:26:25,210] INFO [annex] filled text for annex_no=000302 source=pdf
+[2025-08-26 10:26:25,596] INFO [annex] filled text for annex_no=002600 source=pdf
+[2025-08-26 10:26:28,847] INFO [annex] filled text for annex_no=000700 source=pdf
+[2025-08-26 10:26:38,365] INFO [annex] filled text for annex_no=000600 source=pdf
+[2025-08-26 10:26:40,091] INFO [annex] filled text for annex_no=004300 source=pdf
+[2025-08-26 10:26:40,543] INFO [annex] filled text for annex_no=004400 source=pdf
+[2025-08-26 10:26:40,990] INFO [annex] filled text for annex_no=001500 source=pdf
+[2025-08-26 10:26:41,416] INFO [annex] filled text for annex_no=004600 source=pdf
+[2025-08-26 10:26:42,953] INFO [annex] filled text for annex_no=004700 source=pdf
+[2025-08-26 10:26:43,388] INFO [annex] filled text for annex_no=003300 source=pdf
+[2025-08-26 10:26:43,890] INFO [annex] filled text for annex_no=003100 source=pdf
+[2025-08-26 10:26:44,326] INFO [annex] filled text for annex_no=003200 source=pdf
+[2025-08-26 10:26:45,410] INFO [annex] filled text for annex_no=003400 source=pdf
+[2025-08-26 10:26:46,618] INFO [annex] filled text for annex_no=001900 source=pdf
+[2025-08-26 10:26:47,049] INFO [annex] filled text for annex_no=002200 source=pdf
+[2025-08-26 10:26:47,442] INFO [annex] filled text for annex_no=002100 source=pdf
+[2025-08-26 10:26:50,832] INFO [annex] filled text for annex_no=001800 source=pdf
+[2025-08-26 10:26:51,676] INFO [annex] filled text for annex_no=010300 source=pdf
+[2025-08-26 10:26:52,405] INFO [annex] filled text for annex_no=001000 source=pdf
+[2025-08-26 10:26:54,311] INFO [annex] filled text for annex_no=008400 source=pdf
+[2025-08-26 10:26:55,002] INFO [annex] filled text for annex_no=005400 source=pdf
+[2025-08-26 10:26:55,407] INFO [annex] filled text for annex_no=005300 source=pdf
+[2025-08-26 10:26:55,931] INFO [annex] filled text for annex_no=005200 source=pdf
+[2025-08-26 10:26:56,342] INFO [annex] filled text for annex_no=004800 source=pdf
+[2025-08-26 10:26:56,722] INFO [annex] filled text for annex_no=004900 source=pdf
+[2025-08-26 10:26:56,723] INFO [annex] filled 87/87 units (law_title='산업안전
+보건법 시행규칙')
+[2025-08-26 10:26:56,723] INFO MST 271485: 별표/서식 units += 87
+[2025-08-26 10:26:56,875] INFO MST 271485 build finished in 82.48s (units=1386)[2025-08-26 10:26:57,733] INFO GET /DRF/lawService.do 844ms 200 ct=application/json;charset=UTF-8 url=http://www.law.go.kr/DRF/lawService.do?OC=shg30335&target=law&type=JSON&MST=272499
+[2025-08-26 10:26:57,806] INFO MST 272499: 부칙 units += 19
+[2025-08-26 10:26:57,808] INFO [annex] licbyl search=2 by law_title='산업안전보
+건법 시행령'
+[2025-08-26 10:26:57,856] INFO GET /DRF/lawSearch.do 47ms 200 ct=application/json;charset=UTF-8 url=http://www.law.go.kr/DRF/lawSearch.do?OC=shg30335&target=licbyl&type=JSON&query=%EC%82%B0%EC%97%85%EC%95%88%EC%A0%84%EB%B3%B4%EA%B1%B4%EB%B2%95+%EC%8B%9C%ED%96%89%EB%A0%B9&page=1&display=100&sort=lasc&search=2       
+[2025-08-26 10:26:57,862] INFO [annex] search=2 rows=35
+[2025-08-26 10:26:59,566] INFO [annex] filled text for annex_no=001100 source=pdf
+[2025-08-26 10:27:03,812] INFO [annex] filled text for annex_no=001900 source=pdf
+[2025-08-26 10:27:05,505] INFO [annex] filled text for annex_no=001800 source=pdf
+[2025-08-26 10:27:06,961] INFO [annex] filled text for annex_no=003300 source=pdf
+[2025-08-26 10:27:13,570] INFO [annex] filled text for annex_no=003500 source=pdf
+[2025-08-26 10:27:15,918] INFO [annex] filled text for annex_no=001000 source=pdf
+[2025-08-26 10:27:16,572] INFO [annex] filled text for annex_no=002100 source=pdf
+[2025-08-26 10:27:17,206] INFO [annex] filled text for annex_no=003400 source=pdf
+[2025-08-26 10:27:17,827] INFO [annex] filled text for annex_no=000100 source=pdf
+[2025-08-26 10:27:18,534] INFO [annex] filled text for annex_no=000500 source=pdf
+[2025-08-26 10:27:19,910] INFO [annex] filled text for annex_no=000600 source=pdf
+[2025-08-26 10:27:22,304] INFO [annex] filled text for annex_no=000800 source=pdf
+[2025-08-26 10:27:24,004] INFO [annex] filled text for annex_no=001700 source=pdf
+[2025-08-26 10:27:24,473] INFO [annex] filled text for annex_no=000900 source=pdf
+[2025-08-26 10:27:25,161] INFO [annex] filled text for annex_no=002700 source=pdf
+[2025-08-26 10:27:25,565] INFO [annex] filled text for annex_no=002800 source=pdf
+[2025-08-26 10:27:26,869] INFO [annex] filled text for annex_no=002400 source=pdf
+[2025-08-26 10:27:29,885] INFO [annex] filled text for annex_no=000300 source=pdf
+[2025-08-26 10:27:30,431] INFO [annex] filled text for annex_no=000400 source=pdf
+[2025-08-26 10:27:31,169] INFO [annex] filled text for annex_no=000700 source=pdf
+[2025-08-26 10:27:32,882] INFO [annex] filled text for annex_no=000200 source=pdf
+[2025-08-26 10:27:33,336] INFO [annex] filled text for annex_no=001400 source=pdf
+[2025-08-26 10:27:34,145] INFO [annex] filled text for annex_no=002300 source=pdf
+[2025-08-26 10:27:34,640] INFO [annex] filled text for annex_no=001600 source=pdf
+[2025-08-26 10:27:35,015] INFO [annex] filled text for annex_no=002000 source=pdf
+[2025-08-26 10:27:37,586] INFO [annex] filled text for annex_no=001300 source=pdf
+[2025-08-26 10:27:38,074] INFO [annex] filled text for annex_no=002600 source=pdf
+[2025-08-26 10:27:41,041] INFO [annex] filled text for annex_no=002500 source=pdf
+[2025-08-26 10:27:41,657] INFO [annex] filled text for annex_no=002900 source=pdf
+[2025-08-26 10:27:43,928] INFO [annex] filled text for annex_no=001500 source=pdf
+[2025-08-26 10:27:44,451] INFO [annex] filled text for annex_no=003200 source=pdf
+[2025-08-26 10:27:44,875] INFO [annex] filled text for annex_no=003100 source=pdf
+[2025-08-26 10:27:47,982] INFO [annex] filled text for annex_no=001200 source=pdf
+[2025-08-26 10:27:50,063] INFO [annex] filled text for annex_no=002200 source=pdf
+[2025-08-26 10:27:52,863] INFO [annex] filled text for annex_no=003000 source=pdf
+[2025-08-26 10:27:52,864] INFO [annex] filled 35/35 units (law_title='산업안전
+보건법 시행령')
+[2025-08-26 10:27:52,864] INFO MST 272499: 별표/서식 units += 35
+[2025-08-26 10:27:52,936] INFO MST 272499 build finished in 56.05s (units=610)
+[2025-08-26 10:27:53,879] INFO GET /DRF/lawService.do 938ms 200 ct=application/json;charset=UTF-8 url=http://www.law.go.kr/DRF/lawService.do?OC=shg30335&target=law&type=JSON&MST=268551
+[2025-08-26 10:27:53,954] INFO MST 268551: 부칙 units += 11
+[2025-08-26 10:27:53,955] INFO [annex] licbyl search=2 by law_title='산업안전보
+건법'
+[2025-08-26 10:27:54,028] INFO GET /DRF/lawSearch.do 78ms 200 ct=application/json;charset=UTF-8 url=http://www.law.go.kr/DRF/lawSearch.do?OC=shg30335&target=licbyl&type=JSON&query=%EC%82%B0%EC%97%85%EC%95%88%EC%A0%84%EB%B3%B4%EA%B1%B4%EB%B2%95&page=1&display=100&sort=lasc&search=2
+[2025-08-26 10:27:54,045] INFO [annex] search=2 rows=100
+[2025-08-26 10:27:54,046] INFO [annex] filled 0/0 units (law_title='산업안전보 
+건법')
+[2025-08-26 10:27:54,237] INFO MST 268551 build finished in 1.30s (units=1041)
+[2025-08-26 10:27:55,308] INFO GET /DRF/lawService.do 1078ms 200 ct=application/json;charset=UTF-8 url=http://www.law.go.kr/DRF/lawService.do?OC=shg30335&target=law&type=JSON&MST=265977
+[2025-08-26 10:27:55,359] INFO MST 265977: 부칙 units += 33
+[2025-08-26 10:27:55,359] INFO [annex] licbyl search=2 by law_title='산업재해보
+상보험법'
+[2025-08-26 10:27:55,406] INFO GET /DRF/lawSearch.do 47ms 200 ct=application/json;charset=UTF-8 url=http://www.law.go.kr/DRF/lawSearch.do?OC=shg30335&target=licbyl&type=JSON&query=%EC%82%B0%EC%97%85%EC%9E%AC%ED%95%B4%EB%B3%B4%EC%83%81%EB%B3%B4%ED%97%98%EB%B2%95&page=1&display=100&sort=lasc&search=2
+[2025-08-26 10:27:55,407] INFO [annex] search=2 rows=31
+[2025-08-26 10:27:55,779] INFO [annex] filled text for annex_no=000500 source=pdf
+[2025-08-26 10:27:56,249] INFO [annex] filled text for annex_no=000100 source=pdf
+[2025-08-26 10:27:56,652] INFO [annex] filled text for annex_no=000400 source=pdf
+[2025-08-26 10:27:57,907] INFO [annex] filled text for annex_no=000300 source=pdf
+[2025-08-26 10:27:58,515] INFO [annex] filled text for annex_no=000200 source=pdf
+[2025-08-26 10:27:58,903] INFO [annex] filled text for annex_no=000600 source=pdf
+[2025-08-26 10:27:58,903] INFO [annex] filled 6/6 units (law_title='산업재해보
+상보험법')
+[2025-08-26 10:27:58,904] INFO MST 265977: 별표/서식 units += 6
+[2025-08-26 10:27:59,007] INFO MST 265977 build finished in 4.77s (units=776)
+[2025-08-26 10:27:59,915] INFO GET /DRF/lawService.do 906ms 200 ct=application/json;charset=UTF-8 url=http://www.law.go.kr/DRF/lawService.do?OC=shg30335&target=law&type=JSON&MST=273081
+[2025-08-26 10:27:59,952] INFO MST 273081: 부칙 units += 3
+[2025-08-26 10:27:59,955] INFO [annex] licbyl search=2 by law_title='중대재해 
+처벌 등에 관한 법률 시행령'
+[2025-08-26 10:28:00,022] INFO GET /DRF/lawSearch.do 62ms 200 ct=application/json;charset=UTF-8 url=http://www.law.go.kr/DRF/lawSearch.do?OC=shg30335&target=licbyl&type=JSON&query=%EC%A4%91%EB%8C%80%EC%9E%AC%ED%95%B4+%EC%B2%98%EB%B2%8C+%EB%93%B1%EC%97%90+%EA%B4%80%ED%95%9C+%EB%B2%95%EB%A5%A0+%EC%8B%9C%ED%96%89%EB%A0%B9&page=1&display=100&sort=lasc&search=2
+[2025-08-26 10:28:00,033] INFO [annex] search=2 rows=5
+[2025-08-26 10:28:00,461] INFO [annex] filled text for annex_no=000400 source=pdf
+[2025-08-26 10:28:00,905] INFO [annex] filled text for annex_no=000200 source=pdf
+[2025-08-26 10:28:03,489] INFO [annex] filled text for annex_no=000300 source=pdf
+[2025-08-26 10:28:04,072] INFO [annex] filled text for annex_no=000500 source=pdf
+[2025-08-26 10:28:07,030] INFO [annex] filled text for annex_no=000100 source=pdf
+[2025-08-26 10:28:07,030] INFO [annex] filled 5/5 units (law_title='중대재해 처
+벌 등에 관한 법률 시행령')
+[2025-08-26 10:28:07,030] INFO MST 273081: 별표/서식 units += 5
+[2025-08-26 10:28:07,049] INFO MST 273081 build finished in 8.03s (units=66)
+[2025-08-26 10:28:08,184] INFO GET /DRF/lawService.do 1141ms 200 ct=application/json;charset=UTF-8 url=http://www.law.go.kr/DRF/lawService.do?OC=shg30335&target=law&type=JSON&MST=228817
+[2025-08-26 10:28:08,194] INFO MST 228817: 부칙 units += 1
+[2025-08-26 10:28:08,212] INFO [annex] licbyl search=2 by law_title='중대재해  
+처벌 등에 관한 법률'
+[2025-08-26 10:28:08,255] INFO GET /DRF/lawSearch.do 32ms 200 ct=application/json;charset=UTF-8 url=http://www.law.go.kr/DRF/lawSearch.do?OC=shg30335&target=licbyl&type=JSON&query=%EC%A4%91%EB%8C%80%EC%9E%AC%ED%95%B4+%EC%B2%98%EB%B2%8C+%EB%93%B1%EC%97%90+%EA%B4%80%ED%95%9C+%EB%B2%95%EB%A5%A0&page=1&display=100&sort=lasc&search=2
+[2025-08-26 10:28:08,256] INFO [annex] search=2 rows=5
+[2025-08-26 10:28:08,256] INFO [annex] filled 0/0 units (law_title='중대재해 처
+벌 등에 관한 법률')
+[2025-08-26 10:28:08,280] INFO MST 228817 build finished in 1.23s (units=63)
+[
+  {
+    "mst": "272927",
+    "units": 2002,
+    "duration_sec": 31.782000000000153,
+    "out_dir": "faiss_indexes",
+    "base": "산업안전보건기준에 관한 규칙_272927",
+    "law_title": "산업안전보건기준에 관한 규칙"
+  },
+  {
+    "mst": "271485",
+    "units": 1386,
+    "duration_sec": 82.48499999999967,
+    "out_dir": "faiss_indexes",
+    "base": "산업안전보건법 시행규칙_271485",
+    "law_title": "산업안전보건법 시행규칙"
+  },
+  {
+    "mst": "272499",
+    "units": 610,
+    "duration_sec": 56.04699999999957,
+    "out_dir": "faiss_indexes",
+    "base": "산업안전보건법 시행령_272499",
+    "law_title": "산업안전보건법 시행령"
+  },
+  {
+    "mst": "268551",
+    "units": 1041,
+    "duration_sec": 1.2970000000004802,
+    "out_dir": "faiss_indexes",
+    "base": "산업안전보건법_268551",
+    "law_title": "산업안전보건법"
+  },
+  {
+    "mst": "265977",
+    "units": 776,
+    "duration_sec": 4.765999999999622,
+    "out_dir": "faiss_indexes",
+    "base": "산업재해보상보험법_265977",
+    "law_title": "산업재해보상보험법"
+  },
+  {
+    "mst": "273081",
+    "duration_sec": 8.030999999999949,
+    "out_dir": "faiss_indexes",
+    "base": "중대재해 처벌 등에 관한 법률 시행령_273081",
+    "law_title": "중대재해 처벌 등에 관한 법률 시행령"
+  },
+  {
+    "mst": "228817",
+    "units": 63,
+    "duration_sec": 1.2349999999996726,
+    "out_dir": "faiss_indexes",
+    "base": "중대재해 처벌 등에 관한 법률_228817",
+    "law_title": "중대재해 처벌 등에 관한 법률"
+  }
+]
+[INFO] manifest upserted: faiss_indexes\manifest.json
+PS C:\Users\kwater\Desktop\safety-ai> python -c "import json; p=r'faiss_indexes\산업안전보건기준에 관한 규칙_272927_units.json'; u=json.load(open(p,encoding='utf-8')); a=[x for x in u if x.get('level') in ('별표','서식')][0]; print(a.get('annex_no'), a.get('title')); print((a.get('text') or '')[:300]); print('source=', a.get('_annex_meta',{}).get('extracted_from'))"
+>> 
+   t') or '')[:300])\x3b print('source=', a.get('_annex_meta',{}).get('extracte000500 강관비계의 조립간격(제59조제4호 관련)e00fd58
+■ 산업안전보건기준에 관한 규칙 [별표 5]
+
+강관비계의 조립간격(제59조제4호 관련)
+강관비계의 종류
+
+단 관 비 계
+틀비계(높이가 5m 미만인 것은 제외한다)
+
+조립간격(단위: m)
+
+수직방향
+5
+6
+
+수평방향
+5
+8
+source= pdf
+PS C:\Users\kwater\Desktop\safety-ai> python -c "import json,re; p=r'faiss_indexes\산업안전보건기준에 관한 규칙_272927_units.json'; u=json.load(open(p,encoding='utf-8')); ann=[x for x in u if x.get('level') in ('별표','서식')]; hits=[(x.get('annex_no'),x.get('title')) for x in ann if re.search('발판|비계|폭', (x.get('text') or ''))]; print(len(hits),'hits'); print(hits[:5])"
+>> 
+6 hits
+[('000500', '강관비계의 조립간격(제59조제4호 관련)'), ('000200', '관리감독자의 
+유해·위험 방지(제35조제1항 관련)'), ('001200', '관리대상 유해물질의 종류(제420 
+조, 제439조 및 제440조 관련)'), ('000400', '사전조사 및 작업계획서 내용(제38조 
+제1항관련)'), ('000100', '위험물질의 종류(제16조ㆍ제17조 및 제225조 관련)')]   
+PS C:\Users\kwater\Desktop\safety-ai> python -c "from vector_search_service import SimpleSearcher; s=SimpleSearcher('faiss_indexes','272927','산업안전보건기준
+에 관한 규칙_272927'); print([ (x.get('level'), x.get('annex_no'), (x.get('text') or '')[:60]) for x in s.search('별표 4의2 작업발판 폭', top_k=10) ])"       
+=10) ])";6848b4df-af0c-4aa1-a5f6-ad580e00fd58✅ 환경변수 LAW_API_OC = shg30335
+[('항', None, '② 사업주는 제1항에 따른 세척 및 소독을 하는 경우에 물이나 그 밖
+의 액체를 다량으로 사용함으로써 습기가 '), ('조', None, '제41조(운전위치의 이탈
+금지)'), ('목', None, '9. 화약류 제조설비'), ('조', None, '제418조(교량에서의  
+추락 방지) 사업주는 교량에서 궤도와 그 밖의 관련 설비의 보수ㆍ점검 등의 작업을 
+하는'), ('항', None, '① 사업주는 근로자가 탱크ㆍ보일러 또는 반응탑의 내부 등 통
+풍이 충분하지 않은 장소에서 용접ㆍ용단 작업을 하'), ('조', None, '제477조 삭제 
+<2024.6.28>'), ('조', None, '제30조(계단의 난간) 사업주는 높이 1미터 이상인 계 
+단의 개방된 측면에 안전난간을 설치하여야 한다.'), ('목', None, '1. 물체가 떨어 
+지거나 날아올 위험 또는 근로자가 추락할 위험이 있는 작업: 안전모'), ('목', None, '5. 제조ㆍ사용ㆍ취급 조건이 해당 금지유해물질의 인화점 이상인 경우에는 사용하
+는 전기 기계ㆍ기구는 적절한 방'), ('항', None, '④ 제3항에 따라 사업주가 잠수작 
+업자에게 제공하여야 하는 잠수장비는 다음 각 호와 같다. <개정 2024.6')]
+PS C:\Users\kwater\Desktop\safety-ai> 

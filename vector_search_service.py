@@ -6,8 +6,219 @@ import time
 import logging
 import tempfile
 import unicodedata
+import numpy as np
+from urllib.parse import urljoin
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 from normalizers import postprocess_units
+from io import BytesIO
+from bs4 import BeautifulSoup  # pip install beautifulsoup4
+from pdfminer.high_level import extract_text
+from pdfminer.pdfparser import PDFSyntaxError
+
+# --- Annex HTML/PDF parsing helpers (module-level) ---
+def _clean_md(s: str) -> str:
+    return "\n".join(line.rstrip() for line in (s or "").splitlines()).strip()
+
+def _html_to_markdown(html: str) -> Tuple[str, List[Dict[str, Any]]]:
+    soup = BeautifulSoup(html, "html.parser")
+    for tag in soup(["script", "style", "noscript"]):
+        tag.decompose()
+
+    blocks: List[str] = []
+    tables_json: List[Dict[str, Any]] = []
+
+    # 표 → 마크다운 + JSON
+    for tbl in soup.find_all("table"):
+        rows = []
+        for tr in tbl.find_all("tr"):
+            cols = [(" ".join(td.stripped_strings)) for td in tr.find_all(["th", "td"])]
+            # 완전 빈 행은 스킵
+            if cols and any(c.strip() for c in cols):
+                rows.append(cols)
+        if not rows:
+            continue
+
+        # 헤더 유무 판단: <th>가 있으면 그걸 헤더로, 없으면 첫 행이 데이터이니 가짜 헤더 생성
+        has_th = bool(tbl.find("th"))
+        if has_th:
+            header = rows[0]
+            data_rows = rows[1:]
+        else:
+            header = [f"열{i+1}" for i in range(len(rows[0]))]
+            data_rows = rows
+
+        # 마크다운 테이블 생성
+        md = []
+        md.append("| " + " | ".join(header) + " |")
+        md.append("| " + " | ".join(["---"] * len(header)) + " |")
+        for r in data_rows:
+            md.append("| " + " | ".join(r) + " |")
+        blocks.append("\n".join(md))
+
+        tables_json.append({"headers": header, "rows": data_rows})
+        tbl.decompose()
+
+    # 본문 텍스트 추출
+    text_parts = []
+    for p in soup.find_all(["h1","h2","h3","h4","h5","h6","p","li","div","span"]):
+        t = " ".join(p.stripped_strings)
+        if t:
+            text_parts.append(t)
+    text_md = "\n".join(text_parts)
+
+    joined = "\n\n".join(part for part in [text_md] + blocks if part.strip())
+    return _clean_md(joined), tables_json
+
+def _is_meaningful_annex(md: Optional[str], tables: Optional[List[Dict[str, Any]]]) -> bool:
+    """
+    본문이 헤더/레이블만인지 판정.
+    - '별표·서식' 류 잡문구 제거 후 충분한 길이인지
+    - 표에 데이터 셀이 실제로 있는지
+    """
+    text = (md or "")
+    # 흔한 헤더/잡문구 제거(변형들 포함)
+    junk = [
+        "별표·서식", "별표 · 서식", "별표 ·서식", "별표· 서식",
+        "첨부파일", "다운로드", "보기", "목록", "프린트", "인쇄",
+    ]
+    for j in junk:
+        text = text.replace(j, "")
+    # 공백/개행 정리
+    text = "\n".join(line.strip() for line in text.splitlines())
+    text = " ".join(text.split())
+    text = text.strip()
+
+    # 표 데이터 유무(헤더만 있고 데이터가 없으면 False)
+    has_table_cells = False
+    for t in (tables or []):
+        rows = t.get("rows") or []
+        for row in rows:
+            if any((c or "").strip() for c in row):
+                has_table_cells = True
+                break
+        if has_table_cells:
+            break
+
+    # 너무 짧은 안내문/헤더만 있으면 False
+    # (실제 내용은 보통 100자 이상이거나 표 데이터가 존재)
+    return (len(text) >= 100) or has_table_cells
+
+
+def _fetch_annex_body_with_links(
+    client: "LawAPIClient",
+    links: Dict[str, str]
+) -> Tuple[Optional[str], Optional[List[Dict[str, Any]]], Optional[str]]:
+    """
+    links: {"detail":..., "html":..., "pdf":...}
+    우선순위: detail(HTML) → html(파일) → pdf
+    return: (본문_MD, tables_json, source_tag)
+    """
+    order = ["detail", "html", "pdf"]
+    for key in order:
+        url = (links or {}).get(key)
+        if not url:
+            continue
+        try:
+            client.rate_limiter.acquire()
+            resp = client.session.get(url, timeout=client.timeout, verify=False)
+            ct = (resp.headers.get("Content-Type") or "").lower()
+
+            # HTML 계열 처리
+            # HTML 계열 처리
+            if key in ("detail", "html") and ("html" in ct or resp.text.lstrip().startswith("<")):
+                html = resp.text
+
+                # detail이 iframe 껍데기면 내부 본문 재요청
+                try:
+                    soup0 = BeautifulSoup(html, "html.parser")
+                    frame = soup0.find("iframe", src=True)
+                    if frame and frame.get("src"):
+                        nested_url = urljoin(url, frame["src"])
+                        resp2 = client.session.get(nested_url, timeout=client.timeout, verify=False)
+                        ct2 = (resp2.headers.get("Content-Type") or "").lower()
+                        if "html" in ct2 and resp2.text.strip():
+                            html = resp2.text
+                except Exception:
+                    pass
+
+                md, tables = _html_to_markdown(html)
+                md = _clean_md(md)
+
+                if not _is_meaningful_annex(md, tables):
+                    # ⬇⬇ detail/html 페이지 안에 있는 실제 컨텐츠 링크를 한 번 더 찾아본다
+                    try:
+                        soup1 = BeautifulSoup(html, "html.parser")
+                        cand_urls: List[str] = []
+
+                        # 1) a[href] 후보들 수집 (우선 flDownload / pdf)
+                        for a in soup1.select("a[href]"):
+                            href = a.get("href")
+                            if not href:
+                                continue
+                            href = href.strip()
+                            if any(x in href.lower() for x in ("fldownload.do", ".pdf", "pdfdown", "fileDown", "flDownload")):
+                                cand_urls.append(urljoin(url, href))
+
+                        # 2) object/embed/src 도 후보
+                        for tag in soup1.find_all(["object", "embed", "iframe"]):
+                            src = tag.get("data") or tag.get("src")
+                            if not src:
+                                continue
+                            src = str(src).strip()
+                            if any(x in src.lower() for x in (".pdf", "fldownload.do")):
+                                cand_urls.append(urljoin(url, src))
+
+                        # 중복 제거, 최대 몇 개만 시도
+                        seen = set()
+                        cand_urls = [u for u in cand_urls if not (u in seen or seen.add(u))][:3]
+
+                        for u2 in cand_urls:
+                            try:
+                                resp2 = client.session.get(u2, timeout=client.timeout, verify=False)
+                                ct2 = (resp2.headers.get("Content-Type") or "").lower()
+
+                                # HTML이면 다시 파싱
+                                if "html" in ct2 or resp2.text.lstrip().startswith("<"):
+                                    md2, tables2 = _html_to_markdown(resp2.text)
+                                    md2 = _clean_md(md2)
+                                    if _is_meaningful_annex(md2, tables2):
+                                        return md2, tables2, key  # 여전히 source_tag는 'detail/html'
+                                # PDF면 텍스트 추출
+                                if ("pdf" in ct2) or u2.lower().endswith(".pdf"):
+                                    try:
+                                        text2 = extract_text(BytesIO(resp2.content))
+                                    except PDFSyntaxError:
+                                        text2 = ""
+                                    if (text2 or "").strip():
+                                        return _clean_md(text2), None, "pdf"
+                            except Exception:
+                                continue
+
+                        # 후보들 다 실패 → 다음 링크(html/pdf)로
+                        continue
+                    except Exception:
+                        # 파싱 실패 → 다음 링크(html/pdf)로
+                        continue
+
+                # 여기까지 왔으면 의미 있는 HTML
+                return md, tables, key
+
+
+            # PDF 계열 처리
+            if key == "pdf" or "pdf" in ct or url.lower().endswith(".pdf"):
+                try:
+                    text = extract_text(BytesIO(resp.content))
+                except PDFSyntaxError:
+                    text = ""
+                if (text or "").strip():
+                    return _clean_md(text), None, key
+
+        except Exception:
+            # 현재 링크 처리 실패 → 다음 후보 링크로 넘어감
+            continue
+
+    # 어떤 링크에서도 본문을 만들지 못한 경우
+    return None, None, None
 
 
 try:
@@ -59,8 +270,6 @@ class AtomicWriter:
 
 # ----------------------- 임베딩 (안전한 플레이스홀더) -------------
 import hashlib
-import numpy as np
-from typing import List
 
 def embed_text(text: str) -> List[float]:
     """해시 → [−1, 1] 범위의 8차원 벡터로 매핑하고 L2 정규화"""
@@ -558,6 +767,23 @@ def fetch_annex_units(client: LawAPIClient, mst: str, law_title: Optional[str]) 
             by_no[key] = u
     units = list(by_no.values())
 
+    # --- 본문/표 추출 주입 ---
+    for u in units:
+        links = u.get("links") or {}
+        text_md, tables_json, source_tag = _fetch_annex_body_with_links(client, links)
+        if text_md:
+            u["text"] = text_md
+            if tables_json:
+                u["tables"] = tables_json  # 역호환용 보조필드(선택)
+            if source_tag:
+                meta = u.get("_annex_meta", {})
+                meta["extracted_from"] = source_tag
+                u["_annex_meta"] = meta
+            logger.info(f"[annex] filled text for annex_no={u.get('annex_no')} source={source_tag}")
+
+    filled = sum(1 for x in units if x.get("_annex_meta", {}).get("extracted_from"))
+    logger.info(f"[annex] filled {filled}/{len(units)} units (law_title='{law_title}')")
+
     return units
 
 # ----------------------- 수집(메타 보존+페이징) -----------
@@ -728,7 +954,7 @@ def build_index_for_mst(mst: str, out_dir: str = "faiss_indexes", client: Option
     annexes = fetch_annex_units(client, mst, law_title)
     if annexes:
         units.extend(annexes)
-        logger.info(f"MST {mst}: 별표/서식 units += {len(annexes)}")
+        logger.info(f"MST {mst}: 별표/서식 units += {len(annexes)}") 
 
     # 2.3) ✅ 후처리(한 번에)
     units = postprocess_units(units, law_meta=law_json.get("법령"))
@@ -779,7 +1005,6 @@ def build_index_for_mst(mst: str, out_dir: str = "faiss_indexes", client: Option
 
     # 7) FAISS 인덱스 저장 (미설치 시 placeholder)
     if faiss is not None and texts_to_embed:
-        import numpy as np
         # ✅ 각 벡터를 살균 후 스택
         xb = np.vstack([_sanitize_vec(embed_text(t)) for t in texts_to_embed]).astype('float32')
         d = xb.shape[1]
@@ -793,7 +1018,7 @@ def build_index_for_mst(mst: str, out_dir: str = "faiss_indexes", client: Option
 
     dt = time.monotonic() - t0
     logger.info("MST %s build finished in %.2fs (units=%d)", mst, dt, len(units))
-        # 직전 본문에서 law_title을 이미 계산함: _get_law_korean_name(law_json)
+       # 직전 본문에서 law_title을 이미 계산함: _get_law_korean_name(law_json)
     law_title = _get_law_korean_name(law_json)
     return {
         "mst": mst,
