@@ -320,5 +320,174 @@ __all__ = [
     "get_attachment_link",
 ]
 
-print("✅ 환경변수 LAW_API_OC =", os.environ.get("LAW_API_OC"))
+if __name__ == "__main__":
+    print("LAW_API_OC =", os.environ.get("LAW_API_OC"))
 
+
+
+# --- Law name resolution / lightweight meta ---
+
+
+_DEF_TITLE_KEYS = (
+    "\ubc95\ub839\uba85\ud55c\uae00",
+    "\ubc95\ub839\uba85",
+    "\ubc95\ub839\uc57d\uce6d",
+)
+_DEF_MST_KEYS = (
+    "\ubc95\ub839\uc77c\ub828\ubc88\ud638",
+    "\ubc95\ub839ID",
+    "MST",
+)
+
+
+def _normalize_name(s: Optional[str]) -> str:
+    if not s:
+        return ""
+    t = str(s).strip()
+    for ch in (" ", "\u00b7", "\u318d", "\t", "\n", "\r", "(", ")"):
+        t = t.replace(ch, "")
+    return t
+
+
+def _extract_law_items(data: Dict[str, Any]) -> List[Dict[str, Any]]:
+    law_list = _safe_get(_safe_get(data, "LawSearch"), "law")
+    return _normalize_list(law_list)
+
+
+def _pick_field_by_substr(item: Dict[str, Any], substrs: Tuple[str, ...]) -> Optional[str]:
+    for k, v in item.items():
+        if any(s in str(k) for s in substrs):
+            if v is not None and str(v).strip():
+                return str(v).strip()
+    return None
+
+
+def _pick_field_exact(item: Dict[str, Any], keys: Tuple[str, ...]) -> Optional[str]:
+    for k in keys:
+        v = item.get(k)
+        if v is not None and str(v).strip():
+            return str(v).strip()
+    return None
+
+
+def _date_to_int(s: Optional[str]) -> int:
+    if not s:
+        return 0
+    digits = "".join(ch for ch in str(s) if ch.isdigit())
+    return int(digits) if digits else 0
+
+
+def _to_int(s: Optional[str]) -> Optional[int]:
+    if s is None:
+        return None
+    digits = "".join(ch for ch in str(s) if ch.isdigit())
+    return int(digits) if digits else None
+
+
+def resolve_law_name(client: LawAPIClient, law_name: str) -> Dict[str, Any]:
+    data = client.search_law(query=law_name, display=50, sort="efdes")
+    items = _extract_law_items(data)
+    norm_query = _normalize_name(law_name)
+
+    candidates = []
+    for it in items:
+        title = _pick_field_exact(it, _DEF_TITLE_KEYS) or _pick_field_by_substr(
+            it, ("\ubc95\ub839\uba85",)
+        )
+        mst = _pick_field_exact(it, _DEF_MST_KEYS) or _pick_field_by_substr(
+            it, ("\ubc95\ub839\uc77c\ub828\ubc88\ud638", "\ubc95\ub839ID", "MST")
+        )
+        law_type = _pick_field_by_substr(
+            it, ("\ubc95\ub839\uad6c\ubd84", "\ubc95\ub839\uc885\ub958", "\ubc95\ub839\uad6c\ubd84\uba85")
+        )
+        effective = _pick_field_by_substr(it, ("\uc2dc\ud589", "\uc2dc\ud589\uc77c"))
+        amended = _pick_field_by_substr(it, ("\uac1c\uc815", "\uac1c\uc815\uc77c"))
+        promulgated = _pick_field_by_substr(it, ("\uacf5\ud3ec", "\uacf5\ud3ec\uc77c"))
+        article_cnt = _pick_field_by_substr(it, ("\uc870\ubb38", "\uc870\ubb38\uc218"))
+        annex_cnt = _pick_field_by_substr(it, ("\ubcc4\ud45c", "\ubcc4\ud45c\uc218"))
+
+        if not title and not mst:
+            continue
+
+        score = 0
+        norm_title = _normalize_name(title)
+        if norm_title and norm_title == norm_query:
+            score += 120
+        elif norm_title and (norm_query in norm_title or norm_title in norm_query):
+            score += 70
+        if law_type and ("\ubc95\ub839" in law_type):
+            score += 20
+        if law_type and ("\ubc95\ub960" in law_type):
+            score += 10
+
+        candidates.append(
+            {
+                "title": title,
+                "mst": mst,
+                "law_type": law_type,
+                "effective_date": effective,
+                "latest_amended": amended,
+                "promulgated_date": promulgated,
+                "article_count": _to_int(article_cnt),
+                "annex_count": _to_int(annex_cnt),
+                "score": score,
+                "sort_date": max(
+                    _date_to_int(effective),
+                    _date_to_int(amended),
+                    _date_to_int(promulgated),
+                ),
+            }
+        )
+
+    if not candidates:
+        return {
+            "status": "unresolved",
+            "law_name": law_name,
+            "reason": "no_candidates",
+        }
+
+    candidates.sort(key=lambda x: (x["score"], x["sort_date"]), reverse=True)
+    best = candidates[0]
+    if not best.get("mst"):
+        return {
+            "status": "unresolved",
+            "law_name": law_name,
+            "reason": "missing_mst",
+        }
+
+    if best["score"] >= 120:
+        conf = "high"
+    elif best["score"] >= 80:
+        conf = "medium"
+    elif best["score"] >= 60:
+        conf = "low"
+    else:
+        conf = "low"
+
+    return {
+        "status": "resolved",
+        "law_name": law_name,
+        "mst": best.get("mst"),
+        "resolved_title": best.get("title"),
+        "match_confidence": conf,
+        "effective_date": best.get("effective_date"),
+        "latest_amended": best.get("latest_amended"),
+        "promulgated_date": best.get("promulgated_date"),
+        "article_count": best.get("article_count"),
+        "annex_count": best.get("annex_count"),
+        "law_type": best.get("law_type"),
+    }
+
+
+def fetch_law_meta_by_name(client: LawAPIClient, law_name: str) -> Dict[str, Any]:
+    result = resolve_law_name(client, law_name)
+    result["fetched_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+    return result
+
+
+__all__ = [
+    "LawAPIClient",
+    "map_law_name_to_mst",
+    "resolve_law_name",
+    "fetch_law_meta_by_name",
+]

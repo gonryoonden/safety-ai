@@ -72,3 +72,20 @@ POST /chat
 - 현재 임베딩은 placeholder. 실제 임베딩 API 연동 필요
 - 대용량 스트리밍 파싱은 후속 개선 지점
 - 벡터 검색 API/Query는 별도 구현 필요
+
+## 운영 요약
+- PR: 오프라인 QA(고정 seed/샘플)로 재현성 보장, 실패 시 즉시 중단
+- Nightly: 온라인 통합 QA(MST 리스트)로 실제 API 변동 점검
+- ID 일련번호 미지원 시 id_check.status=skipped로 명시
+
+## 문서
+- Validation report schema: docs/validation_report_schema.md
+- ID 엔드포인트 시도 기록: docs/id_endpoint_attempts.md
+
+## Nightly 기준
+- 실패 기준: QA 실패 또는 빌드 실패 시 즉시 실패 처리
+- 런타임 상한: GitHub Actions job timeout 30분
+
+## 지식 업로드 표준 커맨드
+python build_upload.py --mst 272927
+생성물: dist/upload/* (ChatGPT Knowledge 업로드용)

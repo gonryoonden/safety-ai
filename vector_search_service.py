@@ -6,10 +6,11 @@ import time
 import logging
 import tempfile
 import unicodedata
+import hashlib
 import numpy as np
 from urllib.parse import urljoin
 from typing import Any, Dict, Iterable, List, Optional, Tuple
-from normalizers import postprocess_units
+from normalizers import postprocess_units, _normalize_text
 from io import BytesIO
 from bs4 import BeautifulSoup  # pip install beautifulsoup4
 from pdfminer.high_level import extract_text
@@ -101,7 +102,7 @@ def _is_meaningful_annex(md: Optional[str], tables: Optional[List[Dict[str, Any]
 
     # 너무 짧은 안내문/헤더만 있으면 False
     # (실제 내용은 보통 100자 이상이거나 표 데이터가 존재)
-    return (len(text) >= 100) or has_table_cells
+    return (len(text) >= 60) or has_table_cells
 
 
 def _fetch_annex_body_with_links(
@@ -113,6 +114,62 @@ def _fetch_annex_body_with_links(
     우선순위: detail(HTML) → html(파일) → pdf
     return: (본문_MD, tables_json, source_tag)
     """
+    global _ANNEX_PDF_CACHE_DIRTY
+
+            # --- URL 보정: 상대경로를 절대경로로, detail은 모바일 뷰 우선 ---
+    base = "https://www.law.go.kr"
+    def _abs(u):
+        return urljoin(base, u) if u else None
+
+    links = {k: _abs(v) for k, v in (links or {}).items()}
+
+    # detail의 모바일 뷰(iframe 없이 본문 노출)를 기본으로 강제
+    detail_mobile = None
+    if links.get("detail"):
+        if "mobileYn=" in links["detail"]:
+            detail_mobile = re.sub(r"mobileYn=[^&]*", "mobileYn=Y", links["detail"])
+        else:
+            sep = "&" if "?" in links["detail"] else "?"
+            detail_mobile = links["detail"] + sep + "mobileYn=Y"
+        links["detail"] = detail_mobile  # ← 이후 로직이 이 값으로 요청하게 바꿈
+
+
+    
+    # --- JSON(licbyl) 상세 폴백: detail 링크의 ID로 '...내용'을 받아오기 ---
+    detail = links.get("detail") or ""   # 패치1에서 보정한 detail을 사용
+    m = re.search(r"[?&]ID=([0-9]+)", detail)
+    if m:
+        lic_id = m.group(1)
+        try:
+            client.rate_limiter.acquire()
+            urlj = f"https://www.law.go.kr/DRF/lawService.do?OC={client.oc}&target=licbyl&ID={lic_id}&type=JSON"
+            respj = client.session.get(urlj, timeout=client.timeout, verify=False)
+            j = respj.json()
+
+            # JSON 어디에 있든 '*내용' 키를 찾아 HTML 본문으로 간주
+            def _find_content(x):
+                if isinstance(x, dict):
+                    for k, v in x.items():
+                        if ("내용" in str(k)) and isinstance(v, str) and v.strip():
+                            return v
+                        got = _find_content(v)
+                        if got: return got
+                elif isinstance(x, list):
+                    for v in x:
+                        got = _find_content(v)
+                        if got: return got
+                return None
+
+            html = _find_content(j)
+            if html:
+                md, tables = _html_to_markdown(html)
+                md = _clean_md(md)
+                if _is_meaningful_annex(md, tables):
+                    return md, tables, "licbyl-json"
+        except Exception:
+            pass
+
+   
     order = ["detail", "html", "pdf"]
     for key in order:
         url = (links or {}).get(key)
@@ -123,9 +180,26 @@ def _fetch_annex_body_with_links(
             resp = client.session.get(url, timeout=client.timeout, verify=False)
             ct = (resp.headers.get("Content-Type") or "").lower()
 
+            # ---- PDF/HTML 추가 판별자 ----
+            cd = (resp.headers.get("Content-Disposition") or "")
+            # Content-Disposition 파일명 추출 (확장자 판단용)
+            m_fn = re.search(r'filename\*?=(?:UTF-8\'\')?"?([^";]+)"?', cd, flags=re.I)
+            filename = (m_fn.group(1) if m_fn else "").strip()
+            filename_l = filename.lower()
+
+            is_pdf_by_header = ("pdf" in ct) or filename_l.endswith(".pdf")
+            # 바이트 시그니처로도 PDF 판정 (flDownload.do는 종종 octet-stream으로 내려옴)
+            content_head = resp.content[:5] if resp.content else b""
+            is_pdf_by_magic = content_head.startswith(b"%PDF-")
+
+            # HTML도 octet-stream으로 내려오는 경우가 있으니, 텍스트가 '<' 로 시작하면 HTML로 간주
+            text_head = (resp.text or "").lstrip()[:1]
+            is_html_loose = ("html" in ct) or text_head == "<"
+
+
             # HTML 계열 처리
             # HTML 계열 처리
-            if key in ("detail", "html") and ("html" in ct or resp.text.lstrip().startswith("<")):
+            if key in ("detail", "html") and is_html_loose:
                 html = resp.text
 
                 # detail이 iframe 껍데기면 내부 본문 재요청
@@ -150,16 +224,16 @@ def _fetch_annex_body_with_links(
                         soup1 = BeautifulSoup(html, "html.parser")
                         cand_urls: List[str] = []
 
-                        # 1) a[href] 후보들 수집 (우선 flDownload / pdf)
+                        # 1) a[href] 후보들 수집 (flDownload/pdf 우선)
                         for a in soup1.select("a[href]"):
                             href = a.get("href")
                             if not href:
                                 continue
                             href = href.strip()
-                            if any(x in href.lower() for x in ("fldownload.do", ".pdf", "pdfdown", "fileDown", "flDownload")):
+                            if any(x in href.lower() for x in ("fldownload.do", ".pdf", "pdfdown", "filedown", "fldownload")):
                                 cand_urls.append(urljoin(url, href))
 
-                        # 2) object/embed/src 도 후보
+                        # 2) object/embed/iframe도 후보로
                         for tag in soup1.find_all(["object", "embed", "iframe"]):
                             src = tag.get("data") or tag.get("src")
                             if not src:
@@ -168,7 +242,7 @@ def _fetch_annex_body_with_links(
                             if any(x in src.lower() for x in (".pdf", "fldownload.do")):
                                 cand_urls.append(urljoin(url, src))
 
-                        # 중복 제거, 최대 몇 개만 시도
+                        # 중복 제거 + 최대 3개까지만 시도
                         seen = set()
                         cand_urls = [u for u in cand_urls if not (u in seen or seen.add(u))][:3]
 
@@ -176,42 +250,75 @@ def _fetch_annex_body_with_links(
                             try:
                                 resp2 = client.session.get(u2, timeout=client.timeout, verify=False)
                                 ct2 = (resp2.headers.get("Content-Type") or "").lower()
+                                cd2 = (resp2.headers.get("Content-Disposition") or "")
+                                m_fn2 = re.search(r'filename\*?=(?:UTF-8\'\')?"?([^";]+)"?', cd2, flags=re.I)
+                                filename2 = (m_fn2.group(1) if m_fn2 else "").strip().lower()
+
+                                # --- 느슨한 판별자: HTML/PDF 모두 header/내용/URL로 감지 ---
+                                is_pdf_by_header2 = ("pdf" in ct2) or filename2.endswith(".pdf")
+                                content_head2 = resp2.content[:5] if resp2.content else b""
+                                is_pdf_by_magic2 = content_head2.startswith(b"%PDF-")
+                                text_head2 = (resp2.text or "").lstrip()[:1]
+                                is_html_loose2 = ("html" in ct2) or text_head2 == "<"
 
                                 # HTML이면 다시 파싱
-                                if "html" in ct2 or resp2.text.lstrip().startswith("<"):
+                                if is_html_loose2:
                                     md2, tables2 = _html_to_markdown(resp2.text)
                                     md2 = _clean_md(md2)
                                     if _is_meaningful_annex(md2, tables2):
-                                        return md2, tables2, key  # 여전히 source_tag는 'detail/html'
+                                        return md2, tables2, f"{key}-follow"
+
                                 # PDF면 텍스트 추출
-                                if ("pdf" in ct2) or u2.lower().endswith(".pdf"):
+                                if is_pdf_by_header2 or is_pdf_by_magic2 or u2.lower().endswith(".pdf"):
                                     try:
-                                        text2 = extract_text(BytesIO(resp2.content))
+                                        _load_annex_pdf_cache()
+                                        content2 = resp2.content or b""
+                                        h2 = hashlib.sha256(content2).hexdigest() if content2 else None
+                                        cached2 = _ANNEX_PDF_CACHE.get(u2) if h2 else None
+                                        if cached2 and cached2.get("hash") == h2 and cached2.get("text"):
+                                            return cached2.get("text"), None, "pdf"
+                                        text2 = extract_text(BytesIO(content2))
                                     except PDFSyntaxError:
                                         text2 = ""
                                     if (text2 or "").strip():
-                                        return _clean_md(text2), None, "pdf"
+                                        out_text2 = _clean_md(text2)
+                                        if h2:
+                                            _ANNEX_PDF_CACHE[u2] = {"hash": h2, "text": out_text2}
+                                            _ANNEX_PDF_CACHE_DIRTY = True
+                                        return out_text2, None, "pdf"
                             except Exception:
+                                # 후보 하나 실패 → 다음 후보 시도
                                 continue
 
-                        # 후보들 다 실패 → 다음 링크(html/pdf)로
+                        # 후보들 전부 실패 → 다음 링크(detail/html/pdf)로
                         continue
                     except Exception:
-                        # 파싱 실패 → 다음 링크(html/pdf)로
+                        # 파싱 실패 → 다음 링크(detail/html/pdf)로
                         continue
 
+                    # 후보들 전부 실패 → 다음 링크(detail/html/pdf)로 넘어감
                 # 여기까지 왔으면 의미 있는 HTML
                 return md, tables, key
 
 
             # PDF 계열 처리
-            if key == "pdf" or "pdf" in ct or url.lower().endswith(".pdf"):
+            if key == "pdf" or is_pdf_by_header or is_pdf_by_magic or url.lower().endswith(".pdf"):
+                _load_annex_pdf_cache()
                 try:
-                    text = extract_text(BytesIO(resp.content))
+                    content = resp.content or b""
+                    h = hashlib.sha256(content).hexdigest() if content else None
+                    cached = _ANNEX_PDF_CACHE.get(url) if h else None
+                    if cached and cached.get("hash") == h and cached.get("text"):
+                        return cached.get("text"), None, key
+                    text = extract_text(BytesIO(content))
                 except PDFSyntaxError:
                     text = ""
                 if (text or "").strip():
-                    return _clean_md(text), None, key
+                    out_text = _clean_md(text)
+                    if h:
+                        _ANNEX_PDF_CACHE[url] = {"hash": h, "text": out_text}
+                        _ANNEX_PDF_CACHE_DIRTY = True
+                    return out_text, None, key
 
         except Exception:
             # 현재 링크 처리 실패 → 다음 후보 링크로 넘어감
@@ -320,54 +427,38 @@ def _fs_slug(name: str, maxlen: int = 80) -> str:
     return s
 
 def _get_law_korean_name(law_json: dict) -> Optional[str]:
-    """
-    법령명(한글)을 최대한 보수적으로 찾아 반환.
-    - 1차: {"법령": {...}} 바로 아래에서 표준 키 조회
-    - 2차: 중첩 전체를 깊이 우선으로 탐색
-    - 3차: 키 변형(언더스코어 없는 "법령명한글" 등)까지 허용
-    """
     if not isinstance(law_json, dict):
         return None
     law = law_json.get("법령") if isinstance(law_json.get("법령"), dict) else law_json
-
-    # 후보 키들(우선순위대로)
-    PREFERRED_KEYS = [
-        "법령약칭명", "법령명_한글", "법령명",
-        "법령명한글", "한글법령명", "법령한글명",
+    preferred = [
+        "법령명한글",
+        "법령명",
+        "법령약칭",
     ]
-
-    # 1) 얕은 검색
-    for k in PREFERRED_KEYS:
-        v = law.get(k) if isinstance(law, dict) else None
+    for k in preferred:
+        v = law.get(k)
         if isinstance(v, (str, int)) and str(v).strip():
             return str(v).strip()
-
-    # 2) 깊은 탐색
     def walk(obj):
         if isinstance(obj, dict):
-            # 우선 표준 키들
-            for k in PREFERRED_KEYS:
-                v = obj.get(k)
-                if isinstance(v, (str, int)) and str(v).strip():
-                    return str(v).strip()
-            # 그 다음 전체 키 스캔
             for k, v in obj.items():
-                # 키 정규화(언더스코어 제거/소문자)
-                kk = re.sub(r"[_\s]+", "", str(k)).lower()
-                if kk in ("법령명한글", "한글법령명", "법령한글명"):
+                if "법령명" in str(k):
                     if isinstance(v, (str, int)) and str(v).strip():
                         return str(v).strip()
-                res = walk(v)
-                if res:
-                    return res
+                got = walk(v)
+                if got:
+                    return got
         elif isinstance(obj, list):
             for it in obj:
-                res = walk(it)
-                if res:
-                    return res
+                got = walk(it)
+                if got:
+                    return got
         return None
-
     return walk(law)
+
+
+def _clean(s):
+    return " ".join(str(s).split()) if s else ""
 
 def _find_korean_name_from_laws_dir(mst: str) -> Optional[str]:
     """laws/*.json의 목록 파일에서 MST에 해당하는 한글명을 폴백으로 찾는다."""
@@ -499,6 +590,28 @@ def extract_units(law_json: Dict[str, Any]) -> List[Dict[str, Any]]:
             return "\n".join(parts)
         return str(v or "")
 
+    def _first_value(obj, keys: List[str]) -> Optional[str]:
+        if not isinstance(obj, dict):
+            return None
+        for k in keys:
+            v = _sg(obj, k)
+            if v is None:
+                continue
+            s = str(v).strip()
+            if s:
+                return s
+        return None
+
+    def _list_from(obj: Any, key: str) -> List[Any]:
+        raw = _sg(obj, key)
+        if isinstance(raw, dict) and key in raw:
+            raw = raw[key]
+        return _as_list(raw)
+
+    def _item_path_join(*parts: Optional[str]) -> Optional[str]:
+        cleaned = [p for p in parts if p]
+        return "-".join(cleaned) if cleaned else None
+
     articles = _get_articles_any_shape(law_json)  # 다양한 형태의 '조문'을 평탄화
     for art in articles:
         if _is_heading_only(art):  # 편/장/절/관/부칙/별표/서식 등 헤딩만인 경우 스킵
@@ -507,6 +620,7 @@ def extract_units(law_json: Dict[str, Any]) -> List[Dict[str, Any]]:
         jo_raw   = _clean(_sg(art, "조문번호"))
         jo_title = _clean(_sg(art, "조문제목"))
         jo_body  = _clean(_stringify(_sg(art, "조문내용")))
+        jo_id = _first_value(art, ["조문일련번호"])
 
         # 1) 조 단위
         if jo_raw and (jo_title or jo_body):
@@ -516,15 +630,18 @@ def extract_units(law_json: Dict[str, Any]) -> List[Dict[str, Any]]:
                 "title": jo_title or None,
                 "text": jo_body or "",
                 "path": f"제{jo_raw}조",
+                "article_id": jo_id,
+                "paragraph_id": None,
+                "item_id": None,
             })
 
         # 2) 항 단위
-        for h in _as_list(_sg(art, "항")):
+        for h in _list_from(art, "항"):
             hang_no   = _clean(_sg(h, "항번호") or _sg(h, "항"))
             hang_body = _clean(_stringify(_sg(h, "항내용") or h))
             if not hang_no or not hang_body:
                 continue
-
+            hang_id = _first_value(h, ["항일련번호"])
             h_path = f"제{jo_raw}조 > 제{hang_no}항" if jo_raw else f"제{hang_no}항"
             units.append({
                 "level": "항",
@@ -532,27 +649,114 @@ def extract_units(law_json: Dict[str, Any]) -> List[Dict[str, Any]]:
                 "title": None,
                 "text": hang_body,
                 "path": h_path,
+                "article_id": jo_id,
+                "paragraph_id": hang_id,
+                "item_id": None,
             })
 
-            # 3) 목(또는 호) 단위
-            m_list = _as_list(_sg(h, "목") or _sg(h, "호"))
-            for m in m_list:
-                mok_no   = _clean(_sg(m, "목번호") or _sg(m, "호번호") or _sg(m, "목") or _sg(m, "호"))
-                mok_body = _clean(_stringify(_sg(m, "목내용") or _sg(m, "호내용") or m))
+            # 3) 호 단위
+            for ho in _list_from(h, "호"):
+                ho_no   = _clean(_sg(ho, "호번호") or _sg(ho, "호"))
+                ho_body = _clean(_stringify(_sg(ho, "호내용") or ho))
+                if not ho_no or not ho_body:
+                    continue
+                ho_id = _first_value(ho, ["호일련번호"])
+                ho_path_raw = _item_path_join(ho_no)
+                units.append({
+                    "level": "목",
+                    "jo": jo_raw, "hang": hang_no, "mok": ho_no,
+                    "title": None,
+                    "text": ho_body,
+                    "path": f"{h_path} > {ho_no}",
+                    "item_type": "호",
+                    "item_path_raw": ho_path_raw,
+                    "article_id": jo_id,
+                    "paragraph_id": hang_id,
+                    "item_id": ho_id,
+                })
+
+                # 3-1) 호 > 목 단위
+                for mok in _list_from(ho, "목"):
+                    mok_no   = _clean(_sg(mok, "목번호") or _sg(mok, "목"))
+                    mok_body = _clean(_stringify(_sg(mok, "목내용") or mok))
+                    if not mok_no or not mok_body:
+                        continue
+                    mok_id = _first_value(mok, ["목일련번호"])
+                    mok_path_raw = _item_path_join(ho_no, mok_no)
+                    units.append({
+                        "level": "목",
+                        "jo": jo_raw, "hang": hang_no, "mok": mok_no,
+                        "title": None,
+                        "text": mok_body,
+                        "path": f"{h_path} > {ho_no} > {mok_no}",
+                        "item_type": "목",
+                        "item_path_raw": mok_path_raw,
+                        "article_id": jo_id,
+                        "paragraph_id": hang_id,
+                        "item_id": mok_id,
+                    })
+
+                    # 3-2) 호 > 목 > 세목 단위
+                    for semok in _list_from(mok, "세목"):
+                        sm_no   = _clean(_sg(semok, "세목번호") or _sg(semok, "세목"))
+                        sm_body = _clean(_stringify(_sg(semok, "세목내용") or semok))
+                        if not sm_no or not sm_body:
+                            continue
+                        sm_id = _first_value(semok, ["세목일련번호"])
+                        sm_path_raw = _item_path_join(ho_no, mok_no, sm_no)
+                        units.append({
+                            "level": "목",
+                            "jo": jo_raw, "hang": hang_no, "mok": sm_no,
+                            "title": None,
+                            "text": sm_body,
+                            "path": f"{h_path} > {ho_no} > {mok_no} > {sm_no}",
+                            "item_type": "세목",
+                            "item_path_raw": sm_path_raw,
+                            "article_id": jo_id,
+                            "paragraph_id": hang_id,
+                            "item_id": sm_id,
+                        })
+
+            # 4) 항 > 목 단위 (호 없이 직접 목이 오는 경우)
+            for mok in _list_from(h, "목"):
+                mok_no   = _clean(_sg(mok, "목번호") or _sg(mok, "목"))
+                mok_body = _clean(_stringify(_sg(mok, "목내용") or mok))
                 if not mok_no or not mok_body:
                     continue
-
-                # 기존 데이터 스타일을 따라 "1.호" 형태로 맞춤
-                _seg = mok_no.strip()
-                seg = f"{_seg}호" if _seg.endswith(".") else f"{_seg}.호"
-
+                mok_id = _first_value(mok, ["목일련번호"])
+                mok_path_raw = _item_path_join(mok_no)
                 units.append({
                     "level": "목",
                     "jo": jo_raw, "hang": hang_no, "mok": mok_no,
                     "title": None,
                     "text": mok_body,
-                    "path": f"{h_path} > {seg}",
+                    "path": f"{h_path} > {mok_no}",
+                    "item_type": "목",
+                    "item_path_raw": mok_path_raw,
+                    "article_id": jo_id,
+                    "paragraph_id": hang_id,
+                    "item_id": mok_id,
                 })
+
+                for semok in _list_from(mok, "세목"):
+                    sm_no   = _clean(_sg(semok, "세목번호") or _sg(semok, "세목"))
+                    sm_body = _clean(_stringify(_sg(semok, "세목내용") or semok))
+                    if not sm_no or not sm_body:
+                        continue
+                    sm_id = _first_value(semok, ["세목일련번호"])
+                    sm_path_raw = _item_path_join(mok_no, sm_no)
+                    units.append({
+                        "level": "목",
+                        "jo": jo_raw, "hang": hang_no, "mok": sm_no,
+                        "title": None,
+                        "text": sm_body,
+                        "path": f"{h_path} > {mok_no} > {sm_no}",
+                        "item_type": "세목",
+                        "item_path_raw": sm_path_raw,
+                        "article_id": jo_id,
+                        "paragraph_id": hang_id,
+                        "item_id": sm_id,
+                    })
 
     return units
 
@@ -606,185 +810,252 @@ def extract_buchik_units(law_json: Dict[str, Any]) -> List[Dict[str, Any]]:
                 "title": title,
                 "text": text,
                 "path": "부칙",
+                "article_id": None,
+                "paragraph_id": None,
+                "item_id": None,
             })
     except Exception:
         return units
     return units
 
 
-def fetch_annex_units(client: LawAPIClient, mst: str, law_title: Optional[str]) -> List[Dict[str, Any]]:
+def _norm_title(s: str) -> str:
+    s = str(s or "")
+    s = re.sub(r"\s+", "", s)
+    s = s.replace("·", "").replace(".", "").replace("(", "").replace(")", "")
+    return s
+
+def _loose_match_title(a: str, b: str) -> bool:
+    if not a or not b:
+        return False
+    A = _norm_title(a)
+    B = _norm_title(b)
+    return A in B or B in A
+
+def fetch_annex_units(client: LawAPIClient, mst: str, law_title: Optional[str]) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
     """
-    licbyl(별표/서식) 검색 → 해당 MST만 수집해 유닛화.
+    licbyl(별표/서식) 검색 → 해당 MST/법령명으로 부속(별표/서식)만 얇게 수집.
     최소 버전: 제목/번호/링크만 채움 (본문 텍스트는 제목 복제)
     """
     units: List[Dict[str, Any]] = []
+    expected = {"annex_no": set(), "annex_id": set()}
 
-    def _rows(resp: Dict[str, Any]) -> List[Dict[str, Any]]:
-        """응답 어디에 있든 licbyl을 리스트로 반환."""
-        if not isinstance(resp, dict):
-            return []
-        blk = resp.get("licBylSearch") or resp.get("LicBylSearch") or resp.get("licbylsearch")
-        rows = (blk.get("licbyl") if isinstance(blk, dict) else None) or resp.get("licbyl")
-        if rows:
-            return rows if isinstance(rows, list) else [rows]
-        out: List[Dict[str, Any]] = []
-        stack = [resp]
-        while stack:
-            cur = stack.pop()
-            if isinstance(cur, dict):
-                for k, v in cur.items():
-                    if k.lower() == "licbyl":
-                        if isinstance(v, list):
-                            out.extend(v)
-                        elif isinstance(v, dict):
-                            out.append(v)
-                    elif isinstance(v, (dict, list)):
-                        stack.append(v)
-            elif isinstance(cur, list):
-                stack.extend(cur)
-        return out
-    
-     # 1차: law_title(법령명) 기반 '해당법령검색(search=2)'
-    rows = []
-    if law_title:
-        try:
-            logger.info(f"[annex] licbyl search=2 by law_title={law_title!r}")
-            resp = client.search_attachments(query=str(law_title), search=2, display=100)
-            rows = _rows(resp)
-            logger.info(f"[annex] search=2 rows={len(rows)}")
-        except Exception:
-            rows = []
+    # 1) licbyl 검색 (해당 법령명 기반, 느슨 매칭 허용)
+    rows: List[Dict[str, Any]] = []
+    try:
+        qlaw = law_title
+        if not qlaw:
+            try:
+                law_json = client.get_law(mst)
+                qlaw = _get_law_korean_name(law_json) or ""
+            except Exception:
+                qlaw = ""
+        if qlaw:
+            page = 1
+            # ------ [PATCH: licbyl paging guards] ------
+            MAX_PAGES = 50              # 안전 상한 (원하면 30~100 사이로 조절)
+            NOHIT_STOP_AFTER = 3        # 연속 N페이지 매칭 0건이면 조기 종료
+            KEEP_LIMIT = 80             # 충분히 많이 모였으면 조기 종료
+            keep_incremental: List[Dict[str, Any]] = []
+            nohit_streak = 0
+            # ------ [PATCH END] ------
+            while True:
+                resp = client.search_attachments(query=qlaw, page=page, display=100, sort="lasc", search=2)
 
-    # 2차: law_title로 '별표/서식명(search=1)'
-    if not rows and law_title:
-        try:
-            logger.info(f"[annex] licbyl search=1 by law_title={law_title!r}")
-            resp2 = client.search_attachments(query=str(law_title), search=1, display=100)
-            rows = _rows(resp2)
-            logger.info(f"[annex] search=1 rows={len(rows)}")
-        except Exception:
-            rows = []
+                # 응답 어디에 있든 licbyl 리스트만 뽑기
+                def _rows(resp: Dict[str, Any]) -> List[Dict[str, Any]]:
+                    if not isinstance(resp, dict):
+                        return []
+                    blk = resp.get("licBylSearch") or resp.get("LicBylSearch") or resp.get("licbylsearch")
+                    rows0 = (blk.get("licbyl") if isinstance(blk, dict) else None) or resp.get("licbyl")
+                    if rows0:
+                        return rows0 if isinstance(rows0, list) else [rows0]
+                    out: List[Dict[str, Any]] = []
+                    stack = [resp]
+                    while stack:
+                        cur = stack.pop()
+                        if isinstance(cur, dict):
+                            for k, v in cur.items():
+                                if k.lower() == "licbyl":
+                                    if isinstance(v, list):
+                                        out.extend(v)
+                                    elif isinstance(v, dict):
+                                        out.append(v)
+                                elif isinstance(v, (dict, list)):
+                                    stack.append(v)
+                        elif isinstance(cur, list):
+                            stack.extend(cur)
+                    return out
 
-    # 3차: law_title로 '본문검색(search=3)'
-    if not rows and law_title:
-        try:
-            logger.info(f"[annex] licbyl search=3 by law_title={law_title!r}")
-            resp3 = client.search_attachments(query=str(law_title), search=3, display=100)
-            rows = _rows(resp3)
-            logger.info(f"[annex] search=3 rows={len(rows)}")
-        except Exception:
-            rows = []
+                cur_rows = _rows(resp)
+                # ------ [PATCH: incremental filter & early stop] ------
+                new_keep: List[Dict[str, Any]] = []
+                for r in cur_rows:
+                    law_nm = str(r.get("관련법령명") or r.get("법령명") or "").strip()
+                    rel = str(r.get("관련법령일련번호") or r.get("법령일련번호") or r.get("MST") or "").strip()
+                    if (mst and rel and rel == str(mst)) or (law_title and law_nm and _loose_match_title(law_title, law_nm)):
+                        new_keep.append(r)
 
-    # (옵션) 마지막 폴백: mst 문자열로 search=2
-    if not rows:
-        try:
-            logger.info(f"[annex] licbyl search=2 by mst={mst}")
-            resp4 = client.search_attachments(query=str(mst), search=2, display=100)
-            rows = _rows(resp4)
-            logger.info(f"[annex] search=2(mst) rows={len(rows)}")
-        except Exception:
-            rows = []
+                if new_keep:
+                    keep_incremental.extend(new_keep)
+                    nohit_streak = 0
+                else:
+                    nohit_streak += 1
+                # ------ [PATCH END] ------
+                rows.extend(cur_rows)
 
-    if not rows:
-        return units
+                blk = resp.get("licBylSearch") or {}
+                total = int(str(blk.get("totalCnt") or len(cur_rows)))
+                per = int(str(blk.get("numOfRows") or 100))
+                if page * per >= total:
+                    break
+                # ------ [PATCH: hard cap & early stop] ------
+                if page >= MAX_PAGES:
+                    logger.info("[annex] page cap reached at %d (totalCnt=%s)", page, blk.get("totalCnt"))
+                    break
+                if len(keep_incremental) >= KEEP_LIMIT or nohit_streak >= NOHIT_STOP_AFTER:
+                    logger.info(
+                        "[annex] early stop paging: keep=%d nohit=%d page=%d",
+                        len(keep_incremental), nohit_streak, page
+                    )
+                    break
+                # ------ [PATCH END] ------
+                page += 1
+    except Exception:
+        logger.exception("[annex] licbyl search failed")
+        rows = []
+        # ------ [PATCH: use filtered rows if any] ------
+        if keep_incremental:
+            rows = keep_incremental
+            # ------ [PATCH END] ------
 
-    LAW_BASE = os.environ.get("LAW_BASE", "http://www.law.go.kr")
 
-    def _norm_annex_no(s: Optional[str]) -> Optional[str]:
-        if not s:
-            return None
-        s = str(s).strip()
-        # "4-2" / "4/2" / "4 의 2" / "4의2" 등 → "4의2"
-        m = re.match(r'^(\d+)\s*(?:[-_/]|의)\s*(\d+)$', s)
-        if m:
-            return f"{m.group(1)}의{m.group(2)}"
-        # 단일 숫자는 그대로
-        m2 = re.match(r'^\d+$', s)
-        if m2:
-            return s
-        return s
-
-    def _get_any(d: Dict[str, Any], keys: List[str]) -> Optional[str]:
-        for k in keys:
-            v = _sg(d, k)
-            if v:
-                return v
-        return None
-
-    def _abs(u: Optional[str]) -> Optional[str]:
-        if not u:
-            return None
-        return u if str(u).startswith("http") else (LAW_BASE + str(u))
-
+    # licbyl 행 필터링: MST 일치 OR 법령명 느슨 매칭
+    keep: List[Dict[str, Any]] = []
     for r in rows:
-        # 관련 법령 일련번호가 있으면 mst로 필터, 없으면 통과
-        rel = _clean(_get_any(r, ["관련법령일련번호", "법령일련번호", "MST"]))
-        if rel and rel != str(mst):
-            continue
+        law_nm = str(r.get("관련법령명") or r.get("법령명") or "").strip()
+        rel = str(r.get("관련법령일련번호") or r.get("법령일련번호") or r.get("MST") or "").strip()
+        if mst and rel and rel == str(mst):
+            keep.append(r); continue
+        if qlaw and law_nm and _loose_match_title(qlaw, law_nm):
+            keep.append(r); continue
+    rows = keep
+    logger.info("[annex] rows after loose match = %d", len(rows))
 
-        name = _clean(_get_any(r, ["별표명", "서식명", "항목명", "명칭", "제목"]))
-        annex_no = _norm_annex_no(_get_any(r, ["별표번호", "번호"]))
 
-        html = _get_any(r, ["별표서식파일링크","별표본문링크","서식파일링크","파일링크","본문링크"])
-        pdf  = _get_any(r, ["별표서식PDF파일링크","PDF파일링크","서식PDF링크"])
-        det  = _get_any(r, ["별표법령상세링크","상세링크","법령상세링크"])
-        links = {}
-        if html: links["html"]   = _abs(html)
-        if pdf:  links["pdf"]    = _abs(pdf)
-        if det:  links["detail"] = _abs(det)
-        # level 판정: '서식명' 키가 있으면 서식, 아니면 별표
-        is_form = _get_any(r, ["서식명"]) is not None
-        level = "서식" if is_form else "별표"
-        path_label = f"{level} {annex_no}" if annex_no else level
-
+    # licbyl 행 → 유닛화
+    for r in rows:
+        kind = str(r.get("별표종류") or "별표")
+        no = str(r.get("별표번호") or "").strip()
+        title = _clean(str(r.get("별표명") or ""))
+        human = None
+        if no and re.fullmatch(r"\d{6}", no):
+            a = int(no[:4]); b = int(no[4:])
+            human = f"{kind} {a}" + (f"의{b}" if b else "")
+        links = {
+            "detail": r.get("별표법령상세링크"),
+            "html": r.get("별표서식파일링크"),
+            "pdf": r.get("별표서식PDF파일링크"),
+        }
+        annex_id = str(r.get("별표일련번호") or "").strip() or None
         units.append({
-            "level": level,
-            "jo": None, "hang": None, "mok": None,
-            "title": name or "별표/서식",
-            "text": name or "별표/서식",                         # 최소 버전: 본문 = 제목
-            "path": path_label,   # 표시 경로
-            "annex_no": annex_no,
-            "links": links or None,
+            "level": kind,
+            "annex_no": no or None,
+            "annex_no_human": human,
+            "title": title,
+            "text": title,  # 최소 버전
+            "links": links,
+            "_annex_meta": {"extracted_from": None},
+            "path": f"{kind}",
+            "annex_id": annex_id,
+            "article_id": None,
+            "paragraph_id": None,
+            "item_id": None,
         })
 
-         # --- annex 중복 정리: 같은 annex_no는 '최고본'만 유지 ---
+    # 2) 폴백: licbyl이 비었으면 조문제목에서 [별표]/[서식] 감지
+    if not units:
+        try:
+            law_json = client.get_law(mst)
+            def _parse_from_title(t: str):
+                m = re.search(r"(별표|서식)\s*([0-9]+)(?:\s*의\s*([0-9]+))?", t)
+                if not m:
+                    return None
+                kind = m.group(1); a = int(m.group(2)); b = int(m.group(3) or 0)
+                code = f"{a:04d}{b:02d}"
+                human = f"{kind} {a}" + (f"의{b}" if b else "")
+                return kind, human, code
+            articles = _get_articles_any_shape(law_json)
+            for art in articles:
+                t = _clean(str((art or {}).get("조문제목") or ""))
+                if not t:
+                    continue
+                parsed = _parse_from_title(t)
+                if not parsed:
+                    continue
+                kind, human, code = parsed
+                units.append({
+                    "level": kind,
+                    "annex_no": code,
+                    "annex_no_human": human,
+                    "title": t,
+                    "text": t,
+                    "links": {},
+                    "_annex_meta": {"extracted_from": "title"},
+                    "path": f"{kind}",
+                    "annex_id": None,
+                    "article_id": None,
+                    "paragraph_id": None,
+                    "item_id": None,
+                })
+        except Exception:
+            logger.exception("[annex] fallback from titles failed")
+
+    # 3) dedup: annex_no 기준, 링크가 많은 쪽 우선
+    by: Dict[str, Dict[str, Any]] = {}
     def _score(u: Dict[str, Any]) -> int:
-        L = u.get("links") or {}
-        s = 0
-        if L.get("html"):   s += 4
-        if L.get("pdf"):    s += 2
-        if L.get("detail"): s += 1
-        title = (u.get("title") or "").strip()
-        if title: s += min(50, len(title))
-        # 별표를 서식보다 우선시하려면 가중치 (선택)
-        if u.get("level") == "별표": s += 1
-        return s
-
-    by_no: Dict[str, Dict[str, Any]] = {}
+        ln = (u.get("links") or {})
+        return (1 if ln.get("detail") else 0) + (2 if ln.get("html") else 0) + (3 if ln.get("pdf") else 0)
     for u in units:
-        key = str(u.get("annex_no") or (u.get("title") or ""))
-        if key not in by_no or _score(u) > _score(by_no[key]):
-            by_no[key] = u
-    units = list(by_no.values())
-
-    # --- 본문/표 추출 주입 ---
-    for u in units:
+        key = u.get("annex_no") or (u.get("level"), u.get("title"))
+        key = str(key)
+        if key not in by or _score(u) > _score(by[key]):
+            by[key] = u
+    
+    # 4) 본문 주입: licbyl-JSON → detail/html → pdf 순으로 시도
+    out = list(by.values())
+    for u in out:
+        if (u.get("level") not in ("별표", "서식")):
+            continue
         links = u.get("links") or {}
-        text_md, tables_json, source_tag = _fetch_annex_body_with_links(client, links)
-        if text_md:
-            u["text"] = text_md
-            if tables_json:
-                u["tables"] = tables_json  # 역호환용 보조필드(선택)
-            if source_tag:
-                meta = u.get("_annex_meta", {})
-                meta["extracted_from"] = source_tag
+        try:
+            md, tables, src = _fetch_annex_body_with_links(client, links)
+            if md:
+                u["text"] = md
+                meta = u.get("_annex_meta") or {}
+                if src:
+                    meta["source"] = src
+                if tables:
+                    meta["tables"] = tables
                 u["_annex_meta"] = meta
-            logger.info(f"[annex] filled text for annex_no={u.get('annex_no')} source={source_tag}")
+                logger.info("[annex] filled text for %s via %s", u.get("annex_no") or u.get("title"), src)
 
-    filled = sum(1 for x in units if x.get("_annex_meta", {}).get("extracted_from"))
-    logger.info(f"[annex] filled {filled}/{len(units)} units (law_title='{law_title}')")
+        except Exception:
+            # 본문 추출 실패 시 최소버전(제목 그대로) 유지
+            pass
 
-    return units
+    if not expected["annex_no"]:
+        for u in out:
+            if u.get("annex_no"):
+                expected["annex_no"].add(str(u.get("annex_no")))
+    if not expected["annex_id"]:
+        for u in out:
+            if u.get("annex_id"):
+                expected["annex_id"].add(str(u.get("annex_id")))
+
+    _save_annex_pdf_cache()
+    return out, expected
+
 
 # ----------------------- 수집(메타 보존+페이징) -----------
 def fetch_full_law(client: LawAPIClient, mst: str) -> Dict[str, Any]:
@@ -907,6 +1178,279 @@ def _dump_debug_json(path: str, obj: Dict[str, Any]) -> None:
     with open(path, "w", encoding="utf-8") as f:
         json.dump(obj, f, ensure_ascii=False, indent=2)
 
+# ----------------------- 무결성 검증 ----------------------
+def _list_from(obj: Any, key: str) -> List[Any]:
+    raw = _sg(obj, key)
+    if isinstance(raw, dict) and key in raw:
+        raw = raw[key]
+    return _as_list(raw)
+
+def _collect_source_id_sets(law_json: Dict[str, Any]) -> Dict[str, set]:
+    ids = {"article": set(), "paragraph": set(), "item": set()}
+    for art in _get_articles_any_shape(law_json):
+        if not isinstance(art, dict):
+            continue
+        jo_id = _sg(art, "조문일련번호")
+        if jo_id:
+            ids["article"].add(str(jo_id))
+        for h in _list_from(art, "항"):
+            if not isinstance(h, dict):
+                continue
+            hang_id = _sg(h, "항일련번호")
+            if hang_id:
+                ids["paragraph"].add(str(hang_id))
+            for ho in _list_from(h, "호"):
+                if not isinstance(ho, dict):
+                    continue
+                ho_id = _sg(ho, "호일련번호")
+                if ho_id:
+                    ids["item"].add(str(ho_id))
+                for mok in _list_from(ho, "목"):
+                    if not isinstance(mok, dict):
+                        continue
+                    mok_id = _sg(mok, "목일련번호")
+                    if mok_id:
+                        ids["item"].add(str(mok_id))
+                    for semok in _list_from(mok, "세목"):
+                        if not isinstance(semok, dict):
+                            continue
+                        sm_id = _sg(semok, "세목일련번호")
+                        if sm_id:
+                            ids["item"].add(str(sm_id))
+            for mok in _list_from(h, "목"):
+                if not isinstance(mok, dict):
+                    continue
+                mok_id = _sg(mok, "목일련번호")
+                if mok_id:
+                    ids["item"].add(str(mok_id))
+                for semok in _list_from(mok, "세목"):
+                    if not isinstance(semok, dict):
+                        continue
+                    sm_id = _sg(semok, "세목일련번호")
+                    if sm_id:
+                        ids["item"].add(str(sm_id))
+    return ids
+
+def _find_dups(values: List[str]) -> Dict[str, int]:
+    counts: Dict[str, int] = {}
+    for v in values:
+        counts[v] = counts.get(v, 0) + 1
+    return {k: v for k, v in counts.items() if v > 1}
+
+def _annex_base_missing(annex_no_set: set) -> List[str]:
+    base_to_suffix: Dict[int, set] = {}
+    for code in annex_no_set:
+        s = str(code).strip()
+        if not s.isdigit() or len(s) != 6:
+            continue
+        base = int(s[:4]); suf = int(s[4:])
+        base_to_suffix.setdefault(base, set()).add(suf)
+    missing = []
+    for base, sufs in base_to_suffix.items():
+        if sufs and 0 not in sufs:
+            missing.append(f"{base:04d}00")
+    return missing
+
+def _make_failure_entry(
+    failure_type: str,
+    mst: Optional[str] = None,
+    crawl_ts: Optional[str] = None,
+    seed: Optional[int] = None,
+    unit: Optional[Dict[str, Any]] = None,
+    detail: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    entry = {
+        "failure_type": failure_type,
+        "mst": mst,
+        "crawl_ts": crawl_ts,
+        "seed": seed,
+        "source_anchor": None,
+        "display_path_norm": None,
+        "source_url": None,
+        "level": None,
+        "ref": None,
+    }
+    if unit:
+        entry["source_anchor"] = unit.get("source_anchor")
+        entry["display_path_norm"] = unit.get("display_path_norm")
+        entry["source_url"] = unit.get("source_url")
+        entry["level"] = unit.get("level")
+        entry["ref"] = {
+            "annex_refs": unit.get("annex_refs"),
+            "ref_by": unit.get("ref_by"),
+        }
+    if detail:
+        entry["detail"] = detail
+    return entry
+
+
+def _validate_units_integrity(
+    law_json: Dict[str, Any],
+    units: List[Dict[str, Any]],
+    annex_expected: Optional[Dict[str, Any]] = None,
+    mst: Optional[str] = None,
+    crawl_ts: Optional[str] = None,
+    seed: Optional[int] = None,
+) -> Dict[str, Any]:
+    source_ids = _collect_source_id_sets(law_json)
+
+    unit_article_ids = [str(u.get("article_id")) for u in units if u.get("article_id")]
+    unit_paragraph_ids = [str(u.get("paragraph_id")) for u in units if u.get("paragraph_id")]
+    unit_item_ids = [str(u.get("item_id")) for u in units if u.get("item_id")]
+    unit_annex_ids = [str(u.get("annex_id")) for u in units if u.get("annex_id") and not u.get("annex_placeholder")]
+    unit_annex_nos = [str(u.get("annex_no")) for u in units if u.get("annex_no") and not u.get("annex_placeholder")]
+
+    unit_sets = {
+        "article": set(unit_article_ids),
+        "paragraph": set(unit_paragraph_ids),
+        "item": set(unit_item_ids),
+        "annex_id": set(unit_annex_ids),
+        "annex_no": set(unit_annex_nos),
+    }
+
+    id_check_active = any(source_ids.get(k) for k in ("article", "paragraph", "item"))
+    missing_ids = {}
+    extra_ids = {}
+    for k in ("article", "paragraph", "item"):
+        if id_check_active and source_ids.get(k):
+            missing_ids[k] = sorted(source_ids[k] - unit_sets[k])
+            extra_ids[k] = sorted(unit_sets[k] - source_ids[k])
+        else:
+            missing_ids[k] = []
+            extra_ids[k] = []
+
+    annex_expected = annex_expected or {}
+    expected_annex_no = set(annex_expected.get("annex_no") or [])
+    expected_annex_id = set(annex_expected.get("annex_id") or [])
+    missing_annex_no = sorted(expected_annex_no - unit_sets["annex_no"]) if expected_annex_no else []
+    missing_annex_id = sorted(expected_annex_id - unit_sets["annex_id"]) if expected_annex_id else []
+    extra_annex_no = sorted(unit_sets["annex_no"] - expected_annex_no) if expected_annex_no else []
+    extra_annex_id = sorted(unit_sets["annex_id"] - expected_annex_id) if expected_annex_id else []
+
+    dups = {
+        "article_id": _find_dups(unit_article_ids),
+        "paragraph_id": _find_dups(unit_paragraph_ids),
+        "item_id": _find_dups(unit_item_ids),
+        "annex_id": _find_dups(unit_annex_ids),
+        "annex_no": _find_dups(unit_annex_nos),
+    }
+
+    # 필수 메타 누락 점검
+    missing_meta: List[Dict[str, Any]] = []
+    for i, u in enumerate(units):
+        missing = []
+        if not u.get("law"):
+            missing.append("law")
+        if not u.get("mst"):
+            missing.append("mst")
+        if not u.get("source_anchor"):
+            missing.append("source_anchor")
+        if not u.get("source_url"):
+            missing.append("source_url")
+        lvl = u.get("level")
+        if lvl in ("조", "항", "목") and not u.get("article"):
+            missing.append("article")
+        if lvl in ("항", "목") and not u.get("paragraph"):
+            missing.append("paragraph")
+        if lvl == "목" and not u.get("item_path"):
+            missing.append("item_path")
+        if missing:
+            missing_meta.append({
+                "idx": i,
+                "level": lvl,
+                "path": u.get("path"),
+                "source_anchor": u.get("source_anchor"),
+                "missing": missing,
+            })
+
+    annex_refs_missing: List[Dict[str, Any]] = []
+    for u in units:
+        if u.get("annex_refs_missing"):
+            annex_refs_missing.append({
+                "source_anchor": u.get("source_anchor"),
+                "display_path_norm": u.get("display_path_norm"),
+                "missing": u.get("annex_refs_missing"),
+            })
+
+    failures: List[Dict[str, Any]] = []
+    unit_by_anchor = {u.get("source_anchor"): u for u in units if u.get("source_anchor")}
+    for m in missing_meta:
+        u = unit_by_anchor.get(m.get("source_anchor"))
+        failures.append(_make_failure_entry(
+            "missing_required_meta",
+            mst=mst,
+            crawl_ts=crawl_ts,
+            seed=seed,
+            unit=u,
+            detail=m,
+        ))
+    for m in annex_refs_missing:
+        u = unit_by_anchor.get(m.get("source_anchor"))
+        failures.append(_make_failure_entry(
+            "annex_ref_missing",
+            mst=mst,
+            crawl_ts=crawl_ts,
+            seed=seed,
+            unit=u,
+            detail=m,
+        ))
+    if id_check_active:
+        for k in ("article", "paragraph", "item"):
+            if missing_ids.get(k):
+                failures.append(_make_failure_entry(
+                    "id_missing",
+                    mst=mst,
+                    crawl_ts=crawl_ts,
+                    seed=seed,
+                    unit=None,
+                    detail={"id_type": k, "missing": missing_ids.get(k)},
+                ))
+            if extra_ids.get(k):
+                failures.append(_make_failure_entry(
+                    "id_extra",
+                    mst=mst,
+                    crawl_ts=crawl_ts,
+                    seed=seed,
+                    unit=None,
+                    detail={"id_type": k, "extra": extra_ids.get(k)},
+                ))
+        for k, v in dups.items():
+            if v:
+                failures.append(_make_failure_entry(
+                    "id_duplicate",
+                    mst=mst,
+                    crawl_ts=crawl_ts,
+                    seed=seed,
+                    unit=None,
+                    detail={"id_type": k, "duplicate": v},
+                ))
+    report = {
+        "source_counts": {k: len(v) for k, v in source_ids.items()},
+        "unit_counts": {
+            "article": len(unit_sets["article"]),
+            "paragraph": len(unit_sets["paragraph"]),
+            "item": len(unit_sets["item"]),
+            "annex_id": len(unit_sets["annex_id"]),
+            "annex_no": len(unit_sets["annex_no"]),
+        },
+        "missing_ids": missing_ids,
+        "extra_ids": extra_ids,
+        "duplicate_ids": dups,
+        "annex_missing_no": missing_annex_no,
+        "annex_missing_id": missing_annex_id,
+        "annex_extra_no": extra_annex_no,
+        "annex_extra_id": extra_annex_id,
+        "annex_base_missing": _annex_base_missing(unit_sets["annex_no"]),
+        "annex_refs_missing": annex_refs_missing,
+        "missing_required_meta": missing_meta,
+        "id_check": {
+            "status": "active" if id_check_active else "skipped",
+            "reason": None if id_check_active else "source_ids_missing",
+        },
+        "failures": failures,
+    }
+    return report
+
 # ----------------------- 인덱스 빌드 ----------------------
 def build_index_for_mst(mst: str, out_dir: str = "faiss_indexes", client: Optional[LawAPIClient] = None) -> Dict[str, Any]:
     client = client or LawAPIClient()
@@ -914,6 +1458,12 @@ def build_index_for_mst(mst: str, out_dir: str = "faiss_indexes", client: Option
 
     # 0) 수집
     law_json = fetch_full_law(client, mst)
+    try:
+        law_hash = hashlib.sha256(
+            json.dumps(law_json, ensure_ascii=False, sort_keys=True).encode("utf-8")
+        ).hexdigest()
+    except Exception:
+        law_hash = None
 
     # 1) 저장 경로(예쁜 파일명 적용)
     base = _make_base_name(mst, law_json) if PRETTY_NAMES else str(mst)
@@ -951,13 +1501,48 @@ def build_index_for_mst(mst: str, out_dir: str = "faiss_indexes", client: Option
         if base.endswith(f"_{mst}"):
             law_title = base[:-(len(mst) + 1)] or None
 
-    annexes = fetch_annex_units(client, mst, law_title)
+    annexes, annex_expected = fetch_annex_units(client, mst, law_title)
     if annexes:
         units.extend(annexes)
         logger.info(f"MST {mst}: 별표/서식 units += {len(annexes)}") 
 
     # 2.3) ✅ 후처리(한 번에)
-    units = postprocess_units(units, law_meta=law_json.get("법령"))
+    crawl_ts = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+    units = postprocess_units(
+        units,
+        law_meta=law_json.get("법령"),
+        mst=str(mst),
+        crawl_ts=crawl_ts,
+        law_title=law_title,
+    )
+    if law_hash:
+        for u in units:
+            if not u.get("law_hash"):
+                u["law_hash"] = law_hash
+
+    # 2.4) 무결성 검증 (fail-fast)
+    report = _validate_units_integrity(
+        law_json,
+        units,
+        annex_expected,
+        mst=str(mst),
+        crawl_ts=crawl_ts,
+        seed=None,
+    )
+    report["mst"] = str(mst)
+    report["base"] = base
+    report["crawl_ts"] = crawl_ts
+    report["seed"] = None
+    report["generated_at"] = crawl_ts
+    has_errors = bool(report.get("failures"))
+    if has_errors:
+        if BUNDLE_PER_LAW:
+            report_path = os.path.join(os.path.dirname(units_path), "validation_report.json")
+        else:
+            report_path = os.path.join(out_dir, f"{base}_validation_report.json")
+        with open(report_path, "w", encoding="utf-8") as f:
+            json.dump(report, f, ensure_ascii=False, indent=2)
+        raise RuntimeError(f"Integrity validation failed for MST {mst}. Report: {report_path}")
 
     # 3) units 저장
     with AtomicWriter(units_path) as aw:
@@ -967,7 +1552,9 @@ def build_index_for_mst(mst: str, out_dir: str = "faiss_indexes", client: Option
     texts_to_embed: List[str] = []
     id_map: List[Dict[str, Any]] = []
     for i, u in enumerate(units):
-        combined = ((u.get("title") or "") + "\n" if u.get("title") else "") + (u.get("text") or "")
+        norm_text = u.get("normalized_text") or u.get("text") or ""
+        title = u.get("title") or ""
+        combined = (title + "\n" if title else "") + norm_text
         combined = combined.strip()
         texts_to_embed.append(combined)
         id_map.append({
@@ -1028,7 +1615,7 @@ def build_index_for_mst(mst: str, out_dir: str = "faiss_indexes", client: Option
         "base": base,
         "law_title": law_title
     }
-def build_indexes(msts: List[str], out_dir: str = "faiss_indexes") -> List[Dict[str, Any]]:
+def build_indexes(msts: List[str], out_dir: str = "faiss_indexes", fail_fast: bool = True) -> List[Dict[str, Any]]:
     results = []
     oc = os.environ.get("LAW_API_OC")
     shared_client = LawAPIClient()
@@ -1037,6 +1624,8 @@ def build_indexes(msts: List[str], out_dir: str = "faiss_indexes") -> List[Dict[
             results.append(build_index_for_mst(mst, out_dir, client=shared_client))
         except Exception as e:
             logger.error("build failed for %s: %s", mst, e)
+            if fail_fast:
+                raise
     return results
 
 # ----------------------- 메인 (선택) ----------------------
@@ -1142,7 +1731,7 @@ class SimpleSearcher:
 
     def _embed(self, text: str):
         from vector_search_service import embed_text as _embed_text, _sanitize_vec  # 순환 import 회피
-        v = _embed_text(text)
+        v = _embed_text(_normalize_text(text))
         arr = _sanitize_vec(v)[None, :]  # ✅ 질의 벡터도 살균
         return arr
 
@@ -1314,3 +1903,30 @@ class SimpleSearcher:
                 "display_path_norm": u.get("display_path_norm"),
             })
         return out
+# --- Annex PDF cache ---
+_ANNEX_PDF_CACHE_PATH = os.path.join("faiss_indexes", "annex_pdf_cache.json")
+_ANNEX_PDF_CACHE: Dict[str, Dict[str, Any]] = {}
+_ANNEX_PDF_CACHE_DIRTY = False
+
+def _load_annex_pdf_cache() -> None:
+    global _ANNEX_PDF_CACHE
+    if _ANNEX_PDF_CACHE:
+        return
+    try:
+        if os.path.exists(_ANNEX_PDF_CACHE_PATH):
+            with open(_ANNEX_PDF_CACHE_PATH, "r", encoding="utf-8") as f:
+                _ANNEX_PDF_CACHE = json.load(f) or {}
+    except Exception:
+        _ANNEX_PDF_CACHE = {}
+
+def _save_annex_pdf_cache() -> None:
+    global _ANNEX_PDF_CACHE_DIRTY
+    if not _ANNEX_PDF_CACHE_DIRTY:
+        return
+    try:
+        os.makedirs(os.path.dirname(_ANNEX_PDF_CACHE_PATH), exist_ok=True)
+        with open(_ANNEX_PDF_CACHE_PATH, "w", encoding="utf-8") as f:
+            json.dump(_ANNEX_PDF_CACHE, f, ensure_ascii=False, indent=2)
+        _ANNEX_PDF_CACHE_DIRTY = False
+    except Exception:
+        pass

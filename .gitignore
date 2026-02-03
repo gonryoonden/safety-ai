@@ -21,3 +21,7 @@ venv/
 *.tmp
 *.swp
 faiss_indexes/
+
+dist/
+*_validation_report.json
+*_faiss_index.bin

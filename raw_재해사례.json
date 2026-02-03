@@ -1,0 +1,56 @@
+Responses
+Curl
+
+curl -X 'GET' \
+  'https://apis.data.go.kr/B552468/disaster_api/getDisaster_api?serviceKey=Q%2BjtXGniDIJWEO1Ac2Oz8FCf79By7SBO%2F2r%2FawL4LaA44TMOXD5Y%2B%2FYAbGUMkggRt0q5WpX6e3ynBs%2BKvcALwA%3D%3D&pageNo=1&numOfRows=10' \
+  -H 'accept: */*'
+Request URL
+https://apis.data.go.kr/B552468/disaster_api/getDisaster_api?serviceKey=Q%2BjtXGniDIJWEO1Ac2Oz8FCf79By7SBO%2F2r%2FawL4LaA44TMOXD5Y%2B%2FYAbGUMkggRt0q5WpX6e3ynBs%2BKvcALwA%3D%3D&pageNo=1&numOfRows=10
+Server response
+Code	Details
+200	
+Response body
+결과 다운로드
+
+<OpenAPI_ServiceResponse>
+  <cmmMsgHeader>
+    <errMsg>SERVICE ERROR</errMsg>
+    <returnAuthMsg>NO_OPENAPI_SERVICE_ERROR</returnAuthMsg>
+    <returnReasonCode>12</returnReasonCode>
+  </cmmMsgHeader>
+</OpenAPI_ServiceResponse>
+Response headers
+ content-length: 218 
+ content-type: text/xml;charset=UTF-8 
+Responses
+Code	Description
+10	
+INVALID_REQUEST_PARAMETER_ERROR (잘못된 요청 파라메터 에러)
+
+11	
+NO_MANDATORY_REQUEST_PARAMETERS_ERROR (필수요청 파라메터가 없음)
+
+200	
+성공
+
+Example Value
+Model
+{
+  "header": {
+    "resultCode": "string",
+    "resultMsg": "string"
+  },
+  "body": {
+    "items": {
+      "item": {
+        "boardno": 0,
+        "business": "string",
+        "keyword": "string",
+        "contents": "string"
+      }
+    },
+    "numOfRows": 0,
+    "totalCount": 0,
+    "pageNo": 0
+  }
+}

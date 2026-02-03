@@ -1,0 +1,81 @@
+name: qa-checks
+
+on:
+  pull_request:
+  schedule:
+    - cron: "0 3 * * *" # nightly UTC
+
+jobs:
+  qa_offline:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+      - name: QA offline (fixture)
+        run: |
+          python tools/qa_check.py \
+            --mst 272927 \
+            --seed 42 \
+            --n-meta-sample 100 \
+            --n-annex-sample 20 \
+            --top-k 50 \
+            --law-json laws/raw/mst_272927_all.json \
+            --units-json fixtures/272927_units.json
+
+  qa_online_nightly:
+    if: github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      LAW_API_OC: ${{ secrets.LAW_API_OC }}
+      MST_LIST: "272927 271485 268551 272499 265977 273081 228817"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+      - name: Fetch law JSON (online)
+        run: |
+          for MST in $MST_LIST; do
+            MST=$MST python - <<'PY'
+          import json, os
+          from utils import LawAPIClient
+          mst = os.environ.get("MST")
+          client = LawAPIClient()
+          data = client.get_law(mst)
+          with open(f"laws/raw/mst_{mst}_all.json", "w", encoding="utf-8") as f:
+              json.dump(data, f, ensure_ascii=False, indent=2)
+          PY
+          done
+      - name: Rebuild index (online)
+        run: |
+          for MST in $MST_LIST; do
+            MST=$MST python - <<'PY'
+          import os
+          from vector_search_service import build_index_for_mst
+          mst = os.environ.get("MST")
+          build_index_for_mst(mst, out_dir="faiss_indexes")
+          PY
+          done
+      - name: QA online
+        run: |
+          for MST in $MST_LIST; do
+            python tools/qa_check.py \
+              --mst $MST \
+              --seed 42 \
+              --n-meta-sample 100 \
+              --n-annex-sample 20 \
+              --top-k 50 \
+              --law-json laws/raw/mst_${MST}_all.json
+          done
