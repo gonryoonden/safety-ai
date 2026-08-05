@@ -1,0 +1,99 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>임업 작업 안전교육 3D 시뮬레이터</title>
+  <style>
+    :root{--bg:#07120d;--panel:rgba(12,28,20,.93);--line:rgba(153,214,174,.18);--text:#eef8f1;--muted:#a8bdb0;--green:#4ade80;--yellow:#facc15;--red:#fb7185;--cyan:#67e8f9}
+    *{box-sizing:border-box} body{margin:0;background:var(--bg);color:var(--text);font-family:Pretendard,"Noto Sans KR",system-ui,sans-serif;overflow:hidden}
+    #app{height:100vh;display:grid;grid-template-columns:340px 1fr;grid-template-rows:72px 1fr}
+    header{grid-column:1/3;display:flex;align-items:center;justify-content:space-between;padding:0 24px;background:linear-gradient(90deg,#0c2418,#102f21);border-bottom:1px solid var(--line);z-index:5}
+    .brand{display:flex;gap:14px;align-items:center}.brand-mark{width:42px;height:42px;border-radius:12px;display:grid;place-items:center;background:linear-gradient(145deg,#34d399,#166534);font-size:24px;box-shadow:0 0 28px rgba(52,211,153,.18)}
+    h1{font-size:19px;margin:0}.subtitle{font-size:12px;color:var(--muted);margin-top:4px}.header-actions{display:flex;gap:10px;align-items:center}.badge{padding:8px 12px;border-radius:999px;background:#153e2a;color:#a7f3d0;font-size:12px;border:1px solid rgba(74,222,128,.25)}
+    aside{background:var(--panel);border-right:1px solid var(--line);padding:18px;overflow:auto;z-index:3}.section{padding:16px;background:rgba(255,255,255,.025);border:1px solid var(--line);border-radius:16px;margin-bottom:14px}.section h2{font-size:14px;margin:0 0 12px}.mission{font-size:20px;font-weight:800;line-height:1.4}.hint{font-size:13px;color:var(--muted);line-height:1.6;margin-top:8px}
+    .progress{height:8px;border-radius:999px;background:#173326;overflow:hidden;margin-top:12px}.progress>div{height:100%;width:0;background:linear-gradient(90deg,#22c55e,#a3e635);transition:.3s}
+    .stats{display:grid;grid-template-columns:repeat(3,1fr);gap:8px}.stat{text-align:center;padding:11px 4px;border-radius:12px;background:#0b1c14;border:1px solid var(--line)}.stat b{display:block;font-size:20px}.stat span{font-size:11px;color:var(--muted)}
+    button{border:0;cursor:pointer;font:inherit}.btn{width:100%;padding:12px 14px;border-radius:12px;margin-top:8px;font-weight:700;color:#07120d;background:#86efac}.btn.secondary{color:var(--text);background:#173326;border:1px solid var(--line)}.btn.warn{background:#fde047}.btn:disabled{opacity:.45;cursor:not-allowed}
+    .checklist{display:grid;gap:8px}.check{padding:10px 12px;border:1px solid var(--line);border-radius:12px;font-size:13px;display:flex;align-items:center;gap:9px;color:var(--muted)}.check.done{color:#bbf7d0;background:rgba(34,197,94,.08);border-color:rgba(74,222,128,.35)}
+    main{position:relative;min-width:0}.canvas-wrap{position:absolute;inset:0}canvas{display:block}
+    .top-overlay{position:absolute;top:16px;left:16px;right:16px;display:flex;justify-content:space-between;pointer-events:none}.chip{pointer-events:auto;background:rgba(7,18,13,.82);border:1px solid var(--line);backdrop-filter:blur(10px);padding:10px 13px;border-radius:12px;font-size:12px;color:var(--muted)}
+    .legend{position:absolute;right:16px;bottom:16px;background:rgba(7,18,13,.84);border:1px solid var(--line);border-radius:14px;padding:12px 14px;font-size:12px;line-height:1.8;backdrop-filter:blur(10px)}.dot{display:inline-block;width:9px;height:9px;border-radius:50%;margin-right:7px}.red{background:var(--red)}.yellow{background:var(--yellow)}.green{background:var(--green)}
+    .toast{position:absolute;left:50%;bottom:24px;transform:translate(-50%,20px);opacity:0;background:#102f21;border:1px solid var(--line);padding:13px 18px;border-radius:14px;transition:.25s;pointer-events:none;max-width:520px;text-align:center}.toast.show{opacity:1;transform:translate(-50%,0)}
+    .modal{position:fixed;inset:0;background:rgba(0,0,0,.66);display:none;place-items:center;z-index:10;padding:20px}.modal.show{display:grid}.modal-card{width:min(620px,100%);background:#0c1d14;border:1px solid var(--line);border-radius:22px;padding:24px;box-shadow:0 25px 80px rgba(0,0,0,.45)}.modal-card h3{font-size:24px;margin:0 0 8px}.result-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin:18px 0}.result{background:#10261a;padding:16px;border-radius:14px;text-align:center}.result b{font-size:26px;display:block}.result span{font-size:12px;color:var(--muted)}
+    @media(max-width:850px){#app{grid-template-columns:1fr;grid-template-rows:64px 1fr 300px}header{grid-column:1}.header-actions{display:none}main{grid-row:2}aside{grid-row:3;border-right:0;border-top:1px solid var(--line)} }
+  </style>
+  <script type="importmap">{"imports":{"three":"https://cdn.jsdelivr.net/npm/three@0.180.0/build/three.module.js","three/addons/":"https://cdn.jsdelivr.net/npm/three@0.180.0/examples/jsm/"}}</script>
+</head>
+<body>
+<div id="app">
+  <header>
+    <div class="brand"><div class="brand-mark">🌲</div><div><h1>임업 작업 안전교육 3D 시뮬레이터</h1><div class="subtitle">벌목 작업 전 위험요인 확인 훈련 · Web MVP</div></div></div>
+    <div class="header-actions"><span class="badge">훈련 모드</span><span class="badge" id="timer">경과 00:00</span></div>
+  </header>
+  <aside>
+    <section class="section"><h2>현재 미션</h2><div class="mission" id="missionText">현장에 숨겨진 위험요인 5개를 찾으세요.</div><div class="hint" id="missionHint">마우스로 화면을 회전·확대하고, 위험하다고 판단되는 물체를 클릭하세요.</div><div class="progress"><div id="progressBar"></div></div></section>
+    <section class="section"><div class="stats"><div class="stat"><b id="foundCount">0</b><span>발견</span></div><div class="stat"><b id="score">0</b><span>점수</span></div><div class="stat"><b id="mistakes">0</b><span>오선택</span></div></div></section>
+    <section class="section"><h2>위험요인 체크리스트</h2><div class="checklist" id="checklist"></div></section>
+    <section class="section"><h2>시뮬레이션 제어</h2><button class="btn secondary" id="viewBtn">권장 시점으로 이동</button><button class="btn warn" id="escapeBtn" disabled>대피 방향 선택 단계</button><button class="btn" id="finishBtn" disabled>교육 결과 확인</button><button class="btn secondary" id="resetBtn">처음부터 다시 시작</button></section>
+    <section class="section"><div class="hint">본 콘텐츠는 교육용 MVP입니다. 실제 작업에서는 사업장 위험성평가, 작업계획서, 제조사 지침 및 현장 안전관리자의 통제를 우선 적용해야 합니다.</div></section>
+  </aside>
+  <main>
+    <div class="canvas-wrap" id="scene"></div>
+    <div class="top-overlay"><div class="chip">🖱️ 드래그: 회전 · 휠: 확대 · 위험요인 클릭</div><div class="chip" id="phaseChip">1단계 · 위험요인 탐색</div></div>
+    <div class="legend"><div><i class="dot red"></i>발견된 위험</div><div><i class="dot yellow"></i>선택 가능한 대피방향</div><div><i class="dot green"></i>안전한 대피방향</div></div>
+    <div class="toast" id="toast"></div>
+  </main>
+</div>
+<div class="modal" id="resultModal"><div class="modal-card"><h3>훈련 결과</h3><p class="hint" id="resultMessage"></p><div class="result-grid"><div class="result"><b id="finalScore">0</b><span>최종 점수</span></div><div class="result"><b id="finalFound">0/5</b><span>위험 발견</span></div><div class="result"><b id="finalTime">00:00</b><span>소요 시간</span></div></div><button class="btn" id="closeModal">현장 다시 보기</button></div></div>
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+const container=document.getElementById('scene');
+const scene=new THREE.Scene(); scene.background=new THREE.Color(0x9cc9d5); scene.fog=new THREE.Fog(0x9cc9d5,28,70);
+const camera=new THREE.PerspectiveCamera(52,container.clientWidth/container.clientHeight,.1,150); camera.position.set(17,12,20);
+const renderer=new THREE.WebGLRenderer({antialias:true}); renderer.setPixelRatio(Math.min(devicePixelRatio,2)); renderer.setSize(container.clientWidth,container.clientHeight); renderer.shadowMap.enabled=true; renderer.shadowMap.type=THREE.PCFSoftShadowMap; container.appendChild(renderer.domElement);
+const controls=new OrbitControls(camera,renderer.domElement); controls.target.set(0,2,0); controls.enableDamping=true; controls.maxPolarAngle=Math.PI/2.03; controls.minDistance=8; controls.maxDistance=45;
+scene.add(new THREE.HemisphereLight(0xd9f5ff,0x31472e,2.2)); const sun=new THREE.DirectionalLight(0xffffff,2.5); sun.position.set(12,22,10); sun.castShadow=true; sun.shadow.mapSize.set(2048,2048); scene.add(sun);
+const ground=new THREE.Mesh(new THREE.PlaneGeometry(100,100,1,1),new THREE.MeshStandardMaterial({color:0x43663f,roughness:1})); ground.rotation.x=-Math.PI/2; ground.receiveShadow=true; scene.add(ground);
+const workZone=new THREE.Mesh(new THREE.CircleGeometry(8,64),new THREE.MeshStandardMaterial({color:0x7d6948,roughness:1})); workZone.rotation.x=-Math.PI/2; workZone.position.y=.015; scene.add(workZone);
+function mesh(g,m,p=[0,0,0]){const o=new THREE.Mesh(g,m);o.position.set(...p);o.castShadow=o.receiveShadow=true;scene.add(o);return o}
+function tree(x,z,s=1){const trunk=mesh(new THREE.CylinderGeometry(.32*s,.45*s,5*s,10),new THREE.MeshStandardMaterial({color:0x6b4423}),[x,2.5*s,z]); const crown=mesh(new THREE.ConeGeometry(2.1*s,5*s,10),new THREE.MeshStandardMaterial({color:0x1f6b3b}),[x,6*s,z]); return {trunk,crown}}
+for(const [x,z,s] of [[-13,-8,1.1],[-10,8,.9],[11,-9,1],[14,5,1.2],[-15,2,.8],[7,12,.9],[2,-14,1.1]]) tree(x,z,s);
+const target=tree(0,0,1.15); target.trunk.material=new THREE.MeshStandardMaterial({color:0x8b5a2b});
+const fallArrow=new THREE.ArrowHelper(new THREE.Vector3(1,0,0),new THREE.Vector3(0,.15,0),7,0xfb7185,1.2,.7); scene.add(fallArrow);
+const worker=new THREE.Group(); const body=new THREE.Mesh(new THREE.CapsuleGeometry(.48,1.25,6,12),new THREE.MeshStandardMaterial({color:0xf59e0b})); body.position.y=1.35; const head=new THREE.Mesh(new THREE.SphereGeometry(.34,16,12),new THREE.MeshStandardMaterial({color:0xf2c49b})); head.position.y=2.55; worker.add(body,head); worker.position.set(2.3,0,-.2); scene.add(worker);
+const saw=new THREE.Group(); const sawBody=new THREE.Mesh(new THREE.BoxGeometry(1.15,.45,.45),new THREE.MeshStandardMaterial({color:0xe34b24})); const blade=new THREE.Mesh(new THREE.BoxGeometry(1.2,.12,.28),new THREE.MeshStandardMaterial({color:0xb8c2c8,metalness:.7})); blade.position.x=1.05; saw.add(sawBody,blade); saw.position.set(3,.35,1.1); saw.rotation.y=-.35; scene.add(saw);
+const fuel=mesh(new THREE.BoxGeometry(.75,1,.5),new THREE.MeshStandardMaterial({color:0xc92f2f}),[-1.8,.5,-1]);
+const log=mesh(new THREE.CylinderGeometry(.55,.55,3.8,14),new THREE.MeshStandardMaterial({color:0x8b5a2b}),[5,.55,-2.4]); log.rotation.z=Math.PI/2;
+const branch=new THREE.Group(); for(let i=0;i<4;i++){const b=new THREE.Mesh(new THREE.CylinderGeometry(.08,.13,3.5,7),new THREE.MeshStandardMaterial({color:0x68431f})); b.rotation.z=Math.PI/2+(i-.5)*.18;b.rotation.y=i*.5;branch.add(b)} branch.position.set(-2,.15,3.5); scene.add(branch);
+const post=mesh(new THREE.CylinderGeometry(.05,.05,1.5,8),new THREE.MeshStandardMaterial({color:0x777777}),[5,.75,4]);
+const risks=[
+ {id:'helmet',label:'안전모 미착용',obj:head,tip:'벌목 작업자는 안전모 등 작업에 적합한 개인보호구를 착용해야 합니다.'},
+ {id:'fuel',label:'연료통 근접 배치',obj:fuel,tip:'연료는 점화원과 작업구역에서 이격하고 전도·누출되지 않도록 관리해야 합니다.'},
+ {id:'escape',label:'대피로 장애물',obj:branch,tip:'벌목 시작 전 진행방향 반대 측의 대피로를 확보하고 장애물을 제거해야 합니다.'},
+ {id:'log',label:'굴림 방지 미조치',obj:log,tip:'경사지 또는 이동 가능성이 있는 원목은 쐐기 등으로 굴림을 방지해야 합니다.'},
+ {id:'zone',label:'출입통제 표시 미설치',obj:post,tip:'나무가 넘어지는 위험구역에는 관계자 외 출입을 통제하고 신호체계를 정해야 합니다.'}
+];
+risks.forEach(r=>{r.obj.userData.riskId=r.id;if(r.obj.traverse)r.obj.traverse(c=>c.userData.riskId=r.id)});
+const checklist=document.getElementById('checklist'); risks.forEach(r=>{const d=document.createElement('div');d.className='check';d.id='check-'+r.id;d.innerHTML=`<span>○</span>${r.label}`;checklist.appendChild(d)});
+const escapeOptions=[];
+function makeEscape(dir,color,id,safe){const a=new THREE.ArrowHelper(dir.clone().normalize(),new THREE.Vector3(0,.18,0),6,color,1.1,.65);a.visible=false;a.userData={escapeId:id,safe};a.line.userData=a.userData;a.cone.userData=a.userData;scene.add(a);escapeOptions.push(a)}
+makeEscape(new THREE.Vector3(-1,0,-.75),0xfacc15,'A',true);makeEscape(new THREE.Vector3(1,0,.1),0xfacc15,'B',false);makeEscape(new THREE.Vector3(0,0,1),0xfacc15,'C',false);
+let found=new Set(),score=0,mistakes=0,phase=1,start=Date.now(),elapsed=0;
+const raycaster=new THREE.Raycaster(),mouse=new THREE.Vector2();
+function toast(msg){const el=document.getElementById('toast');el.textContent=msg;el.classList.add('show');clearTimeout(toast.t);toast.t=setTimeout(()=>el.classList.remove('show'),2600)}
+function update(){document.getElementById('foundCount').textContent=found.size;document.getElementById('score').textContent=score;document.getElementById('mistakes').textContent=mistakes;document.getElementById('progressBar').style.width=(found.size/5*100)+'%';if(found.size===5){document.getElementById('escapeBtn').disabled=false;document.getElementById('missionText').textContent='모든 위험요인을 찾았습니다.';document.getElementById('missionHint').textContent='이제 대피 방향 선택 단계로 이동하세요.'}}
+function markRisk(r){found.add(r.id);score+=20;document.getElementById('check-'+r.id).classList.add('done');document.getElementById('check-'+r.id).innerHTML=`<span>✓</span>${r.label}`;const box=new THREE.Box3().setFromObject(r.obj),center=new THREE.Vector3();box.getCenter(center);const ring=new THREE.Mesh(new THREE.TorusGeometry(.7,.07,10,32),new THREE.MeshBasicMaterial({color:0xfb7185}));ring.position.copy(center);ring.rotation.x=Math.PI/2;scene.add(ring);toast(`위험 발견: ${r.label} — ${r.tip}`);update()}
+renderer.domElement.addEventListener('pointerdown',e=>{if(phase===3)return;const rect=renderer.domElement.getBoundingClientRect();mouse.x=((e.clientX-rect.left)/rect.width)*2-1;mouse.y=-((e.clientY-rect.top)/rect.height)*2+1;raycaster.setFromCamera(mouse,camera);const hits=raycaster.intersectObjects(scene.children,true);if(phase===1){const hit=hits.find(h=>h.object.userData.riskId);if(hit){const r=risks.find(x=>x.id===hit.object.userData.riskId);if(!found.has(r.id))markRisk(r);else toast('이미 확인한 위험요인입니다.');}else{mistakes++;score=Math.max(0,score-3);toast('위험요인이 아닙니다. 다른 위치를 확인하세요.');update()}}else if(phase===2){const hit=hits.find(h=>h.object.userData.escapeId);if(!hit)return;const data=hit.object.userData;if(data.safe){score+=20;escapeOptions.forEach(a=>{a.setColor(new THREE.Color(a.userData.safe?0x4ade80:0xfb7185))});toast('올바른 선택입니다. 벌도 방향의 후방 측면으로 신속히 대피합니다.');phase=3;document.getElementById('phaseChip').textContent='3단계 · 훈련 완료';document.getElementById('finishBtn').disabled=false;document.getElementById('missionText').textContent='안전한 대피 방향을 선택했습니다.';document.getElementById('missionHint').textContent='교육 결과를 확인하세요.'}else{mistakes++;score=Math.max(0,score-10);toast('위험한 방향입니다. 벌도 방향 또는 측방 위험구역을 피해야 합니다.');update()}}});
+document.getElementById('escapeBtn').onclick=()=>{phase=2;escapeOptions.forEach(a=>a.visible=true);document.getElementById('phaseChip').textContent='2단계 · 대피방향 선택';document.getElementById('missionText').textContent='가장 안전한 대피 방향을 클릭하세요.';document.getElementById('missionHint').textContent='분홍색 벌도 방향과 장애물 위치를 고려하세요.';document.getElementById('escapeBtn').disabled=true};
+document.getElementById('viewBtn').onclick=()=>{camera.position.set(17,12,20);controls.target.set(0,2,0);controls.update()};
+document.getElementById('resetBtn').onclick=()=>location.reload();
+document.getElementById('finishBtn').onclick=()=>{elapsed=Math.floor((Date.now()-start)/1000);document.getElementById('finalScore').textContent=score;document.getElementById('finalFound').textContent=`${found.size}/5`;document.getElementById('finalTime').textContent=fmt(elapsed);document.getElementById('resultMessage').textContent=score>=110?'위험요인 식별과 대피 방향 선택을 정확하게 수행했습니다.':score>=90?'주요 위험은 확인했지만 일부 오선택이 있었습니다. 체크리스트를 다시 복습하세요.':'현장 위험요인과 벌목 대피 원칙에 대한 반복 훈련이 필요합니다.';document.getElementById('resultModal').classList.add('show')};
+document.getElementById('closeModal').onclick=()=>document.getElementById('resultModal').classList.remove('show');
+function fmt(s){return String(Math.floor(s/60)).padStart(2,'0')+':'+String(s%60).padStart(2,'0')}setInterval(()=>{if(phase<3)elapsed=Math.floor((Date.now()-start)/1000);document.getElementById('timer').textContent='경과 '+fmt(elapsed)},1000);
+function resize(){camera.aspect=container.clientWidth/container.clientHeight;camera.updateProjectionMatrix();renderer.setSize(container.clientWidth,container.clientHeight)}window.addEventListener('resize',resize);
+function animate(){requestAnimationFrame(animate);controls.update();renderer.render(scene,camera)}animate();update();
+</script>
+</body>
+</html>
