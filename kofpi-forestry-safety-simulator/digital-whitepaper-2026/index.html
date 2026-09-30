@@ -1,0 +1,149 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="2026 디지털혁신 백서 장별 카드 검색 및 외부 리소스">
+  <title>2026 디지털혁신 백서</title>
+  <style>
+    :root{
+      --navy:#14345f;--blue:#205fa8;--sky:#eef5fc;--ink:#1b2738;--muted:#667487;
+      --line:#dce4ee;--bg:#f6f8fb;--card:#fff;--shadow:0 8px 24px rgba(20,52,95,.08)
+    }
+    *{box-sizing:border-box}
+    body{margin:0;font-family:"Noto Sans KR","Malgun Gothic",Arial,sans-serif;background:var(--bg);color:var(--ink);line-height:1.65}
+    a{color:var(--blue)}
+    .topbar{height:6px;background:var(--navy)}
+    .wrap{width:min(1120px,calc(100% - 32px));margin:0 auto}
+    header{padding:42px 0 24px}
+    .badge{display:inline-block;background:var(--sky);color:var(--navy);border:1px solid #cfe0f3;border-radius:999px;padding:5px 10px;font-size:13px;font-weight:700}
+    h1{margin:12px 0 4px;font-size:clamp(30px,5vw,44px);line-height:1.2;letter-spacing:-.03em}
+    .subtitle{margin:0;color:var(--muted)}
+    .searchbox{background:var(--card);border:1px solid var(--line);border-radius:16px;padding:18px;box-shadow:var(--shadow);margin:18px 0 22px}
+    .searchrow{display:flex;gap:10px}
+    input[type=search]{flex:1;border:1px solid #cbd6e2;border-radius:10px;padding:13px 14px;font-size:16px;outline:none}
+    input[type=search]:focus{border-color:var(--blue);box-shadow:0 0 0 3px rgba(32,95,168,.12)}
+    button{border:1px solid #cbd6e2;background:#fff;color:var(--ink);border-radius:10px;padding:11px 15px;font-weight:700;cursor:pointer}
+    button:hover{background:var(--sky)}
+    #count{margin:10px 0 0;color:var(--blue);font-weight:800}
+    #status{margin:18px 0;color:var(--muted)}
+    .grid{display:grid;grid-template-columns:repeat(3,1fr);gap:16px}
+    .card{background:var(--card);border:1px solid var(--line);border-radius:16px;padding:20px;box-shadow:0 4px 16px rgba(20,52,95,.05);display:flex;flex-direction:column}
+    .chapter{display:inline-block;width:max-content;background:var(--sky);color:var(--navy);font-size:12px;font-weight:800;border-radius:999px;padding:4px 9px}
+    .card h2{font-size:20px;margin:12px 0 8px;letter-spacing:-.02em}
+    .summary{color:var(--muted);font-size:14px;margin:0;flex:1}
+    details{margin-top:14px;border-top:1px solid var(--line);padding-top:12px}
+    summary{font-weight:700;color:var(--blue);cursor:pointer}
+    .full{font-size:14px;white-space:pre-wrap;margin-top:10px}
+    .external{margin:42px 0 60px}
+    .external h2{font-size:24px;margin-bottom:12px}
+    figure{margin:0;background:#fff;border:1px solid var(--line);border-radius:16px;overflow:hidden;box-shadow:var(--shadow)}
+    figure img{display:block;width:100%;aspect-ratio:3/1;object-fit:cover}
+    figcaption{display:flex;justify-content:space-between;gap:16px;align-items:center;padding:14px 16px;font-size:14px}
+    .resource-tag{background:var(--sky);color:var(--navy);font-weight:700;border-radius:999px;padding:4px 9px;font-size:12px}
+    .empty{background:#fff;border:1px dashed #bfcada;border-radius:16px;padding:36px;text-align:center;color:var(--muted)}
+    footer{border-top:1px solid var(--line);padding:20px 0 30px;color:var(--muted);font-size:13px}
+    @media(max-width:900px){.grid{grid-template-columns:repeat(2,1fr)}}
+    @media(max-width:640px){.grid{grid-template-columns:1fr}.searchrow{flex-direction:column}figcaption{align-items:flex-start;flex-direction:column}}
+  </style>
+</head>
+<body>
+<div class="topbar"></div>
+<div class="wrap">
+  <header>
+    <span class="badge">총 6개 장</span>
+    <h1>2026 디지털혁신 백서</h1>
+    <p class="subtitle">장별 카드 검색 · 외부 리소스</p>
+  </header>
+
+  <section class="searchbox" aria-label="백서 장 검색">
+    <div class="searchrow">
+      <input id="search" type="search" placeholder="예: 예산, 성과 요약, 일정" aria-label="검색어">
+      <button id="reset" type="button">검색 초기화</button>
+    </div>
+    <p id="count" aria-live="polite">결과 0건</p>
+  </section>
+
+  <p id="status">장데이터.json을 불러오는 중입니다.</p>
+  <main id="cards" class="grid" aria-live="polite"></main>
+
+  <section class="external" aria-labelledby="external-title">
+    <h2 id="external-title">외부 리소스</h2>
+    <figure>
+      <img src="https://images.unsplash.com/photo-1516321318423-f06f85e504b3?auto=format&fit=crop&w=1200&q=80" alt="디지털 행정과 기술을 상징하는 노트북 이미지">
+      <figcaption>
+        <span>디지털 행정·혁신 이미지</span>
+        <span><span class="resource-tag">외부 이미지 리소스</span> · <a href="https://unsplash.com/" target="_blank" rel="noopener noreferrer">출처: Unsplash</a></span>
+      </figcaption>
+    </figure>
+  </section>
+</div>
+<footer><div class="wrap">2026 디지털혁신 백서 · 정적 검색 페이지</div></footer>
+
+<script>
+(() => {
+  const cards = document.getElementById('cards');
+  const input = document.getElementById('search');
+  const reset = document.getElementById('reset');
+  const count = document.getElementById('count');
+  const status = document.getElementById('status');
+  let chapters = [];
+
+  const plain = (s='') => s.replace(/^###\s*/gm,'').replace(/\*\*/g,'').replace(/\s+/g,' ').trim();
+  const summary = (s='') => {
+    const p = plain(s);
+    return p.length > 125 ? p.slice(0,125) + '…' : p;
+  };
+  const escapeHtml = (s='') => s.replace(/[&<>"']/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));
+
+  function render(list){
+    count.textContent = '결과 ' + list.length + '건';
+    cards.innerHTML = '';
+    if (!list.length){
+      cards.className = '';
+      cards.innerHTML = '<div class="empty"><strong>검색 결과가 없습니다.</strong><br>다른 키워드로 검색하거나 검색을 초기화해 주세요.</div>';
+      return;
+    }
+    cards.className = 'grid';
+    for (const c of list){
+      const article = document.createElement('article');
+      article.className = 'card';
+      article.innerHTML =
+        '<span class="chapter">제 ' + escapeHtml(c['장']) + '장</span>' +
+        '<h2>' + escapeHtml(c['제목']) + '</h2>' +
+        '<p class="summary">' + escapeHtml(summary(c['본문'])) + '</p>' +
+        '<details><summary>본문 보기</summary><div class="full">' + escapeHtml(plain(c['본문'])) + '</div></details>';
+      cards.appendChild(article);
+    }
+  }
+
+  function filter(){
+    const q = input.value.trim().toLowerCase();
+    const list = !q ? chapters : chapters.filter(c =>
+      String(c['제목'] || '').toLowerCase().includes(q) ||
+      String(c['본문'] || '').toLowerCase().includes(q)
+    );
+    render(list);
+  }
+
+  fetch('./장데이터.json')
+    .then(r => {
+      if(!r.ok) throw new Error('HTTP ' + r.status);
+      return r.json();
+    })
+    .then(data => {
+      chapters = Array.isArray(data) ? data : [];
+      status.hidden = true;
+      render(chapters);
+    })
+    .catch(err => {
+      status.textContent = '장데이터.json을 불러오지 못했습니다. 페이지를 새로고침해 다시 시도해 주세요. (' + err.message + ')';
+      count.textContent = '결과 0건';
+    });
+
+  input.addEventListener('input', filter);
+  reset.addEventListener('click', () => { input.value=''; filter(); input.focus(); });
+})();
+</script>
+</body>
+</html>
